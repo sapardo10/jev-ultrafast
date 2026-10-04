@@ -9,6 +9,9 @@ from pathlib import Path
 
 from mcp.server.mcpserver import MCPServer
 
+from .android import AndroidError, diagnose
+from .webdriver import WebDriverError
+
 REPO = Path(__file__).resolve().parents[1]
 CHROME_CANDIDATES = (
     "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
@@ -58,9 +61,28 @@ def profile_locked(profile):
     return True
 
 
+def ensure_android_chrome(serial):
+    """Attach to Chrome on an Android device: JEV_ANDROID_SERIAL=emulator-5554 [JEV_CDP_PORT=9444]."""
+    from .android import ensure_android
+
+    port = int(os.environ.get("JEV_CDP_PORT", "9444"))
+    websocket = ensure_android(
+        serial, port, cdp_websocket, boot_timeout=int(os.environ.get("JEV_ANDROID_BOOT_TIMEOUT", "120"))
+    )
+    os.environ["BU_CDP_WS"] = websocket
+
+
 def ensure_chrome():
     if EXTERNAL_CDP_WS:
         return
+    if os.environ.get("JEV_IOS_UDID"):
+        from .webdriver import ensure_ios
+
+        ensure_ios()  # validates simulator + Appium + Safari session up front, with a clear error
+        return
+    serial = os.environ.get("JEV_ANDROID_SERIAL")
+    if serial:
+        return ensure_android_chrome(serial)
     port = int(os.environ.get("JEV_CDP_PORT", "9333"))
     # Re-resolve every call: a cached websocket URL goes stale when Chrome restarts.
     websocket = cdp_websocket(port, 1.0)
@@ -95,9 +117,47 @@ def ensure_chrome():
                 break
             time.sleep(0.2)
     if not websocket:
-        raise JevError(f"Chrome remote debugging did not start on port {port} within 20s (port busy or profile locked?).")
+        raise JevError(
+            f"Chrome remote debugging did not start on port {port} within 20s (port busy or profile locked?)."
+        )
     os.environ["BU_CDP_WS"] = websocket
     os.environ.setdefault("BU_NAME", "jev-mcp")
+
+
+LOST_CONNECTION = ("no close frame", "timed out", "connection", "broken pipe", "target closed", "websocket")
+
+
+def explain_error(error):
+    """A browser/device that vanished mid-task surfaces as a raw websocket error; say what it means."""
+    if isinstance(error, (JevError, AndroidError)):
+        return None
+    udid = os.environ.get("JEV_IOS_UDID")
+    if udid and isinstance(error, WebDriverError):
+        from .webdriver import booted
+
+        if not booted(udid):
+            return f"Simulator {udid} shut down mid-task; boot it with `xcrun simctl boot {udid}` and retry."
+        if "remote debugger" in str(error).lower() or "session is gone" in str(error):
+            return "Safari closed or crashed mid-task (WebDriver lost its page); retry the task."
+        return None
+    if not any(marker in f"{type(error).__name__} {error}".lower() for marker in LOST_CONNECTION):
+        return None
+    if os.environ.get("JEV_IOS_UDID"):
+        from .webdriver import ensure_ios
+
+        ensure_ios()  # validates simulator + Appium + Safari session up front, with a clear error
+        return
+    serial = os.environ.get("JEV_ANDROID_SERIAL")
+    if serial:
+        try:
+            cause = diagnose(serial)
+        except Exception:
+            cause = None
+        if cause:
+            return cause
+    if "timed out" in f"{error}".lower():
+        return "The page or device stopped answering CDP calls (page never settled, or the device hung); retry."
+    return "The browser connection was lost mid-task (browser closed or crashed); retry the task."
 
 
 def ensure_model():
@@ -153,10 +213,15 @@ def browser_task(
     except Exception as error:
         import traceback
 
-        return json.dumps(
-            {"status": "error", "error": f"{type(error).__name__}: {error}", "traceback": traceback.format_exc()[-1500:]},
-            indent=1,
-        )
+        result = {
+            "status": "error",
+            "error": f"{type(error).__name__}: {error}",
+            "traceback": traceback.format_exc()[-1500:],
+        }
+        hint = explain_error(error)
+        if hint:
+            result["hint"] = hint
+        return json.dumps(result, indent=1)
 
 
 def _browser_task(url, goal, max_steps, screenshot, return_text=False):
@@ -168,12 +233,17 @@ def _browser_task(url, goal, max_steps, screenshot, return_text=False):
     SCREENSHOT_DIR.mkdir(parents=True, exist_ok=True)
     with Agent(url, goal, screenshots=screenshot) as agent:
         state = agent.snapshot()
+        deadline = time.monotonic() + float(os.environ.get("JEV_TASK_TIMEOUT", "240"))
+        timed_out = False
         for state in agent.run():
             if len(state["history"]) >= max_steps:
                 break
+            if time.monotonic() > deadline:
+                timed_out = True
+                break
         state = agent.snapshot()
         result = {
-            "status": state["status"],
+            "status": "timeout" if timed_out else state["status"],
             "url": state["page"]["url"],
             "title": state["page"]["title"],
             "elapsed_ms": state["elapsed_ms"],

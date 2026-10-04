@@ -1,0 +1,52 @@
+# Design note: native apps (not implemented)
+
+The DOM snapshot has no DOM in a native app, so none of this is built. The loop stays
+`page -> indexed elements -> operation + target -> execution`; only the page source changes.
+
+## Accessibility-tree sources
+
+| Platform | Source | Per element | Execution |
+|---|---|---|---|
+| Android | `adb exec-out uiautomator dump /dev/tty` (XML) | `class`, `text`, `content-desc`, `resource-id`, `clickable`, `enabled`, `focused`, `scrollable`, `checked`, `bounds` | `adb shell input tap x y`, `input swipe`, `input text` (ASCII only; IME or ADBKeyboard for the rest), `input keyevent` |
+| iOS | XCUITest / WebDriverAgent `GET /source?format=json` (Appium XCUITest, already used for iOS Safari here) | `type` (XCUIElementTypeButton/TextField/...), `label`, `name`, `value`, `enabled`, `visible`, `rect` | WDA `/wda/tap`, `/element/{id}/click`, `/value`, `/wda/dragfromtoforduration` |
+
+## Mapping to jev's action space
+
+- **Observed element** = a node with a role that can be acted on: Android `clickable|checkable|long-clickable` or
+  an editable `EditText`; iOS Button/Link/Cell/TextField/Switch/Slider/Picker. Skip `enabled=false`, off-screen
+  (`bounds`/`rect` outside the window), and secure text fields (`password=true` / `SecureTextField`), as snapshot.js skips password inputs.
+- **Name** = `text` > `content-desc` > `hint` > nearest labelled descendant (Android); `label` > `name` > `value` (iOS).
+  Elements with no name get no action, the same rule as snapshot.js.
+- **Operations**: `click` (tap bounds centre), `fill` (tap, select all, type), `select` (iOS picker wheel
+  `setValue`; Android spinner = click then click the option), `scroll` (swipe inside the nearest `scrollable`
+  container; its bounds replace snapshot.js's panel `at`), `wait`.
+- **Targets stay observed ids** (`e1`..`eN`) resolved by code to a bounds centre, never coordinates from the model.
+- **Freshness**: hash `(package/bundle, activity/screen title, element names+bounds+states)`; recheck right before
+  the tap, exactly like `Browser.fresh`. A dump is atomic enough on Android; on iOS a source call is ~0.5-1.5 s.
+- **Page text** for `return_text` = names of visible non-interactive nodes (`TextView`, `StaticText`) in reading order.
+
+## What the nimble prompts would need
+
+- Say what the screen is ("Android app `com.x/.Main`, screen title ...") instead of a URL; drop URL-based hints.
+- Platform vocabulary: tabs, bottom navigation, toolbars, back (system `BACK` / iOS back button) as a dedicated
+  operation, since native apps have no browser history. Add a `BACK` action with no target.
+- Larger element lists with weak names (icon buttons): include `resource-id` tail / accessibility `name` as a hint and
+  cap at the same 250 actions with the same "what lies below" scroll hint from the scrollable container.
+- Keyboard handling: after `fill`, an IME can cover targets; observe again and use bounds from the new dump.
+- Failure modes to keep: no mutation retries, log execution before observing, verify the final screen independently.
+- Not covered by either tree: custom-drawn UI (games, Flutter without semantics, canvas/maps). Those need a
+  vision backend, which is out of scope for this loop.
+
+## Prior art (checked 2026-10-04, from the awesome-jev list)
+
+- [droidrun/mobile-jev](https://github.com/droidrun/mobile-jev) (MIT, TypeScript): Jev on a real Android phone. It
+  observes through the Mobilerun cloud API (paid device and API keys), executes bounded actions (tap, type, back,
+  open app from the installed-app list), keeps traces, and verifies the outcome by re-reading the screen. Reusable
+  ideas: a `BACK` action, app discovery, separate setup/run/verify timing. Not reusable as is: hosted devices, TypeSafe
+  keys, no local adb/emulator, no Ollama path.
+- [awlevin/typesafe-computer-use](https://github.com/awlevin/typesafe-computer-use): macOS, OCR plus bounded Jev
+  action selection (pixels, not an accessibility tree).
+- [jev-chat-jarvis](https://github.com/jev-chat/jev-chat-jarvis): Android chat copilot; reads a visible conversation, fills the reply box, never sends.
+- An "Agent Desktop" project using OS accessibility trees was mentioned by a search summary; not verified.
+
+Conclusion: nobody offers a local, free adb/UiAutomator + local-model native loop, so the spike in this note is not duplicated work.

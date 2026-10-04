@@ -2,6 +2,8 @@
 
 import hashlib
 import json
+import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -23,16 +25,36 @@ SETTLE = """((quiet,limit)=>new Promise(resolve=>{
 }))"""
 
 
+MOBILE_SETTLE = (1500, 10000)  # quiet ms, limit ms
+
+
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
+
+
+def open_browser(url):
+    """CDP Chrome (desktop or Android) by default; iOS Safari over WebDriver when JEV_IOS_UDID is set."""
+    if os.environ.get("JEV_IOS_UDID"):
+        from .webdriver import WebDriverBrowser
+
+        return WebDriverBrowser(url)
+    return Browser(url)
+
+
+def is_mobile_ua(user_agent):
+    """Phone/tablet browsers get real viewport metrics and touch input, never the desktop override."""
+    return bool(re.search(r"Android|iPhone|iPad|Mobile", user_agent or ""))
 
 
 class Browser:
     def __init__(self, url):
         ensure_daemon()
-        self.target = cdp("Target.createTarget", url="about:blank", background=True)["targetId"]
+        self.mobile = is_mobile_ua(cdp("Browser.getVersion").get("userAgent"))
+        # A phone only paints its foreground tab: screenshots and touch input on a background tab hang.
+        self.target = cdp("Target.createTarget", url="about:blank", background=not self.mobile)["targetId"]
         self.session = cdp("Target.attachToTarget", targetId=self.target, flatten=True)["sessionId"]
-        self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
+        if not self.mobile:
+            self.call("Emulation.setDeviceMetricsOverride", width=1120, height=780, deviceScaleFactor=1, mobile=False)
         # Keep rAF/menus rendering in an owned background tab, without activating the user's Chrome tab.
         self.call("Emulation.setFocusEmulationEnabled", enabled=True)
         self.call("Page.navigate", url=url)
@@ -41,7 +63,8 @@ class Browser:
             if self.evaluate("document.readyState") == "complete":
                 break
             time.sleep(0.02)
-        self.settle()
+        # A phone renders several times slower than a desktop: wait for a longer quiet window before observing.
+        self.settle(*MOBILE_SETTLE) if self.mobile else self.settle()
 
     def settle(self, quiet=500, limit=6000):
         """Wait for async content to stop changing; never fatal, the observe loop handles the rest."""
@@ -105,7 +128,7 @@ class Browser:
         for attempt in range(10):
             try:
                 return browser_operation(
-                    {"operation": "observe", "session": self.session, "screenshot": screenshot}
+                    {"operation": "observe", "session": self.session, "screenshot": screenshot, "mobile": self.mobile}
                 )
             except StalePage:
                 if attempt == 9:
@@ -130,7 +153,9 @@ class Browser:
             raise StalePage("Page changed since this decision. Observe again.")
         if action["kind"] == "wait":
             time.sleep(0.1)
-        result = browser_operation({"operation": "act", "session": self.session, "action": action, "text": text})
+        result = browser_operation(
+            {"operation": "act", "session": self.session, "action": action, "text": text, "mobile": self.mobile}
+        )
         self.after_input = action if action["kind"] != "wait" else None
         return result
 
@@ -138,6 +163,19 @@ class Browser:
         if self.target:
             cdp("Target.closeTarget", targetId=self.target)
             self.target = None
+
+
+def screenshot_scale(dpr):
+    """clip.scale that yields a CSS-pixel-sized image on a device with this pixel ratio."""
+    try:
+        return round(1 / float(dpr), 4) if float(dpr) > 0 else 1
+    except (TypeError, ValueError):
+        return 1
+
+
+def select_all_modifier(mobile):
+    """Ctrl on a phone (Android has no Cmd), Cmd on a Mac desktop."""
+    return 4 if sys.platform == "darwin" and not mobile else 2
 
 
 def fingerprint(state):
@@ -148,6 +186,7 @@ def fingerprint(state):
 def browser_operation(request):
     operation = request["operation"]
     session = request["session"]
+    mobile = bool(request.get("mobile"))
 
     def call(method, **params):
         return cdp(method, session_id=session, **params)
@@ -164,8 +203,17 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            at = action.get("at") or {"x": 550, "y": 650}
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=at["x"], y=at["y"], deltaX=0, deltaY=action["delta"])
+            at = action.get("at")
+            if mobile:
+                at = at or evaluate("({x:Math.round(innerWidth/2),y:Math.round(innerHeight/2)})")
+                call(
+                    "Input.synthesizeScrollGesture",
+                    x=at["x"], y=at["y"], yDistance=-action["delta"], gestureSourceType="touch", speed=1500,
+                )
+            else:
+                at = at or {"x": 550, "y": 650}
+                wheel = {"x": at["x"], "y": at["y"], "deltaX": 0, "deltaY": action["delta"]}
+                call("Input.dispatchMouseEvent", type="mouseWheel", **wheel)
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")
@@ -175,8 +223,15 @@ def browser_operation(request):
               if (!e?.isConnected || e.matches(':disabled') || e.closest('[aria-disabled="true"],[inert]') ||
                   !e.checkVisibility({checkOpacity:true,checkVisibilityCSS:true})) return null;
               if (action.kind==='fill' && (e.readOnly || e.getAttribute('aria-readonly')==='true')) return null;
+              // Phones: the on-screen keyboard shrinks the visual viewport, so bring the target into it first
+              // and report touch coordinates in visual-viewport space.
+              const vv=action.mobile ? window.visualViewport : null;
+              const W=vv ? vv.width : innerWidth, H=vv ? vv.height : innerHeight;
+              const inView=b=>b.top>=0 && b.bottom<=H && b.left>=0 && b.right<=W;
+              if (vv && !inView(e.getBoundingClientRect()))
+                e.scrollIntoView({block:'center',inline:'center'});
               const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2;
-              if (!r.width || !r.height || x<0 || y<0 || x>=innerWidth || y>=innerHeight) return null;
+              if (!r.width || !r.height || x<0 || y<0 || x>=W || y>=H) return null;
               if (!e.contains(document.elementFromPoint(x,y))) return null;
               if (action.kind==='select') {
                 if (e.tagName!=='SELECT' || ![...e.options].some(o=>o.value===action.value &&
@@ -185,23 +240,27 @@ def browser_operation(request):
                 e.dispatchEvent(new Event('input',{bubbles:true}));
                 e.dispatchEvent(new Event('change',{bubbles:true}));
               }
-              return {x,y};
-            })(""" + json.dumps(action) + ")")
+              return vv ? {x:(x-vv.offsetLeft)*vv.scale,y:(y-vv.offsetTop)*vv.scale} : {x,y};
+            })(""" + json.dumps({**action, "mobile": mobile}) + ")")
             if target is None:
                 if kind == "select":
                     raise RuntimeError("Dropdown execution was not confirmed; inspect before retrying.")
                 raise StalePage("Target changed or is covered. Observe again.")
             if kind != "select":
                 x, y = target["x"], target["y"]
-                for event in ("mousePressed", "mouseReleased"):
-                    call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
+                if mobile:
+                    call("Input.dispatchTouchEvent", type="touchStart", touchPoints=[{"x": x, "y": y}])
+                    call("Input.dispatchTouchEvent", type="touchEnd", touchPoints=[])
+                else:
+                    for event in ("mousePressed", "mouseReleased"):
+                        call("Input.dispatchMouseEvent", type=event, x=x, y=y, button="left", clickCount=1)
                 if kind == "fill":
                     call(
                         "Input.dispatchKeyEvent",
                         type="keyDown",
                         key="a",
                         code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
+                        modifiers=select_all_modifier(mobile),
                         commands=["selectAll"],
                     )
                     call(
@@ -209,7 +268,7 @@ def browser_operation(request):
                         type="keyUp",
                         key="a",
                         code="KeyA",
-                        modifiers=4 if sys.platform == "darwin" else 2,
+                        modifiers=select_all_modifier(mobile),
                     )
                     call("Input.insertText", text=request["text"])
         return {"executed": action["id"]}
@@ -219,5 +278,15 @@ def browser_operation(request):
         raise StalePage("Document is navigating")
     info["fingerprint"] = fingerprint(info)
     if request.get("screenshot", True):
-        info["screenshot"] = call("Page.captureScreenshot", format="jpeg", quality=72)["data"]
+        shot = {"format": "jpeg", "quality": 72}
+        if mobile:
+            # Capture the visual viewport (what the user sees, keyboard included) in CSS pixels, so image
+            # coordinates equal touch coordinates: Chrome multiplies clip.scale by the device pixel ratio.
+            metrics = call("Page.getLayoutMetrics")["cssVisualViewport"]
+            shot["clip"] = {
+                "x": metrics["pageX"], "y": metrics["pageY"],
+                "width": metrics["clientWidth"], "height": metrics["clientHeight"],
+                "scale": screenshot_scale(evaluate("window.devicePixelRatio")),
+            }
+        info["screenshot"] = call("Page.captureScreenshot", **shot)["data"]
     return info

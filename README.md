@@ -139,6 +139,48 @@ uv run --env-file .env python examples/run.py \
 
 `uv run --env-file .env python examples/flights.py --keep-open` performs the flight search, checks the actual route/date/results, and saves its trace. It does not select or book a flight.
 
+## Mobile: Android Chrome and iOS Safari
+
+Same loop, same action space, same `browser_task` trace. Desktop is unchanged; set one env var to switch.
+
+**Android (Chrome over CDP).** Needs `adb` and a booted emulator or device with Chrome and USB debugging.
+
+```bash
+export JEV_ANDROID_SERIAL=emulator-5554   # `adb devices`; turns Android mode on
+export JEV_CDP_PORT=9444                  # local forward port (default 9444, never the desktop 9333)
+# optional: JEV_ADB (adb path), JEV_ANDROID_BOOT_TIMEOUT (default 120 s), JEV_ANDROID_CHROME (package)
+```
+
+jev checks the device, waits for boot, forwards `localabstract:chrome_devtools_remote`, starts Chrome with first-run
+screens disabled if it is not running, and uses its own harness daemon (`jev-android-<port>`). On a phone it keeps the
+real viewport (no 1120x780 override), opens a foreground tab (a phone does not paint background tabs), taps with touch
+events, scrolls with touch gestures, scrolls targets into the visual viewport (the keyboard shrinks it), waits longer
+for the page to settle, and takes screenshots in CSS pixels of the visible viewport (a 2.6x phone does not return a 2.6x image).
+
+**iOS (Safari on a Simulator, through Appium).** Safari on iOS does not speak CDP, so jev uses W3C WebDriver via
+Appium XCUITest. `snapshot.js` and the action space are unchanged; only the transport differs (`jev_ultrafast/webdriver.py`).
+
+```bash
+npm i appium && npx appium driver install xcuitest      # one-time, free
+npx appium --port 4733 &                                # keep running
+xcrun simctl create jev-ios com.apple.CoreSimulator.SimDeviceType.iPhone-17-Pro com.apple.CoreSimulator.SimRuntime.iOS-26-5
+xcrun simctl boot <UDID>
+export JEV_IOS_UDID=<UDID> JEV_WEBDRIVER_URL=http://127.0.0.1:4733
+# optional: JEV_WEBDRIVER_CAPS='{"appium:platformVersion":"26.5"}'
+```
+
+The first call builds WebDriverAgent on the simulator (about 1-4 minutes); the Safari session id is cached in
+`~/.cache/jev/ios-<udid>.session` and reused. `JEV_TASK_TIMEOUT` (default 240 s) bounds a whole task on every platform.
+
+Failures return JSON with `status: "error"` (or `"timeout"`) and a `hint` that says what died: adb missing, device
+offline/unauthorized/absent, emulator still booting, dead port forward, Chrome closed or crashed mid-task,
+Appium down, simulator not booted, WebDriver session gone, a page that never settles.
+
+Limits: native apps are out of scope (no DOM; see [docs/native-apps.md](docs/native-apps.md)). Elements that expose no
+role and no name (an icon-only hamburger) are not offered to the model, so some mobile layouts cannot be driven. On iOS,
+scroll is a JS scroll, screenshots are full device resolution, and typing uses WebDriver keys. Other Android emulators or
+test runners attached to the same adb server can steal the foreground from Chrome; use a dedicated adb server or device.
+
 ## Why it moves
 
 - **One request per decision cycle.** Operation and target heads share the same observed state.
