@@ -179,8 +179,8 @@ Appium down, simulator not booted, WebDriver session gone, a page that never set
 **Native Android apps (spike).** No browser at all: set `JEV_ANDROID_APP=<package>` next to `JEV_ANDROID_SERIAL` and
 jev reads the screen with `adb exec-out uiautomator dump`, builds the same page dict (`url` = `package/activity`,
 actions `e1..eN`, markers, guards), and acts with `adb shell input` (tap the bounds centre, swipe inside the
-largest scrollable, `input text`, and a new `BACK` operation). Disabled, off-screen, unnamed and password nodes are
-not offered; a Settings row takes its name and switch state from its children. Typing is ASCII only (`input text`);
+largest scrollable, `input text`, and a new `BACK` operation). Disabled, off-screen and password nodes are not offered, and a compact unnamed
+icon button is offered by position ("top left of the screen"), never by coordinates; a Settings row takes its name and switch state from its children. Typing is ASCII only (`input text`);
 anything else is refused before touching the device. `browser_task`'s `url` is optional: pass an activity
 (`.MainActivity`) or leave it empty for the launcher activity. Use a dedicated adb server
 (`ANDROID_ADB_SERVER_PORT=5038`) and `-port` for a test emulator: other Android Studio/Gradle runs attach to all devices.

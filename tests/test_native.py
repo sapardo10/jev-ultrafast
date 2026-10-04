@@ -43,7 +43,7 @@ XML = screen(
 
 def test_skips_disabled_offscreen_unnamed_password_and_systemui():
     elements, scrollables, text, size = parse_screen(XML)
-    assert [e["label"] for e in elements] == ["Dark theme", "Search"]
+    assert [e["label"] for e in elements] == ["Dark theme", "Unnamed icon button (top left of the screen)", "Search"]
     assert size == (1080, 2400)
     assert text == ["Display"]  # the row's own label is not repeated as plain text
     assert len(scrollables) == 1
@@ -55,9 +55,15 @@ def test_row_without_text_takes_name_and_switch_state_from_descendants():
     assert row["role"] == "button" and row["checked"] == "true" and row["label"] == "Dark theme"
 
 
-def test_unlabelled_semantics_node_is_invisible_like_the_web_hamburger():
-    flutter = screen(node({"clickable": "true", "bounds": "[0,0][120,120]"}))
-    assert parse_screen(flutter)[0] == []
+def test_unnamed_compact_control_is_offered_by_position_never_coordinates():
+    flutter = screen(node({"bounds": "[0,0][1080,2400]"}), node({"clickable": "true", "bounds": "[0,100][120,220]"}))
+    (element,) = parse_screen(flutter)[0]
+    assert element["label"] == "Unnamed icon button (top left of the screen)"
+
+
+def test_unnamed_screen_sized_container_is_not_offered():
+    root = node({"bounds": "[0,0][1080,2400]"})
+    assert parse_screen(screen(root, node({"clickable": "true", "bounds": "[0,0][1080,2000]"})))[0] == []
 
 
 def test_page_has_browser_shape_and_control_actions():
@@ -65,8 +71,8 @@ def test_page_has_browser_shape_and_control_actions():
     assert page["url"] == PKG + "/.Main" and page["native"] and page["title"] == "Main"
     ids = [a["id"] for a in page["actions"]]
     assert ids[:2] == ["e1", "e2"] and {"scroll_down", "scroll_up", "back", "wait"} <= set(ids)
-    assert page["guards"].keys() == {"1", "2"} and page["page_key"] and page["marker"]
-    assert next(a for a in page["actions"] if a["id"] == "e2")["kind"] == "fill"
+    assert page["guards"].keys() == {"1", "2", "3"} and page["page_key"] and page["marker"]
+    assert next(a for a in page["actions"] if a["id"] == "e3")["kind"] == "fill"
 
 
 def test_marker_ignores_geometry_but_guard_tracks_it_and_state():
@@ -107,6 +113,10 @@ class FakeScreen(NativeScreen):
         self.sent.append(args)
 
 
+def fill_action(page):
+    return next(a for a in page["actions"] if a["kind"] == "fill")
+
+
 def pages(xml=XML):
     return build_page(xml, PKG + "/.Main")
 
@@ -130,14 +140,14 @@ def test_unicode_text_is_refused_without_touching_the_device():
     page = pages()
     device = FakeScreen([page])
     with pytest.raises(NativeError):
-        device.act(page["actions"][1], page, text="café")
+        device.act(fill_action(page), page, text="café")
     assert device.sent == []
 
 
 def test_fill_taps_clears_then_types():
     page = pages()
     device = FakeScreen([page])
-    device.act(page["actions"][1], page, text="dark mode")
+    device.act(fill_action(page), page, text="dark mode")
     assert [c[1] for c in device.sent] == ["tap", "keyevent", "text"] and device.sent[-1][-1] == "dark%smode"
 
 
@@ -228,3 +238,15 @@ def test_multiline_flutter_semantics_label_is_one_line():
     tab = node({"clickable": "true", "content-desc": "Settings\nTab 2 of 2"})
     xml = screen(node({"bounds": "[0,0][1080,2400]"}), tab)
     assert parse_screen(xml)[0][0]["label"] == "Settings Tab 2 of 2"
+
+
+def test_done_is_not_nudged_by_an_unrelated_native_tap():
+    history = [{"kind": "click", "page_changed": True, "action": "Allow"}]
+    plain = ollama_model.laya_model.DONE
+    assert ollama_model.done_label(history, {"native": True}, "Tap Next twice") == plain
+    related = ollama_model.done_label(
+        [{"kind": "click", "page_changed": True, "action": "Dark theme"}], {"native": True}, "Turn on dark theme"
+    )
+    assert "choose DONE" in related
+    # Web behaviour is unchanged.
+    assert "choose DONE" in ollama_model.done_label(history, {}, "Tap Next twice")

@@ -16,7 +16,15 @@ design. The DOM snapshot has no DOM in a native app, so the loop stays
 Fixed on the way: a system permission dialog over a live app was reported as "app not in foreground"; screen size was
 taken from the largest bounds (off-screen rows counted); multi-line Flutter labels ("Settings\nTab 2 of 2").
 
-Not reproduced: the unlabeled-hamburger problem. Every clickable node in this Flutter app carried a semantics label
+Second pass: `examples/flutter_probe` (Flutter debug app, `flutter test` green) has the mapas-style icon-only hamburger
+(a clickable `Button` with empty `content-desc`). Before the fix it was invisible. Now a compact unnamed clickable is
+offered as `Unnamed icon button (top left of the screen)` (position words only, never coordinates; screen-sized
+containers are skipped). "Open the navigation menu, then open Settings": done, 2 steps, 35 s, screenshot shows the Settings screen.
+The false DONE is fixed in the nudge: on a native screen the "last click completed it, choose DONE" hint appears only when
+the clicked label shares a word with the goal. Rerun of "Tap Next twice" no longer says DONE after an unrelated "Allow"
+(status blocked), but nimble still ignores the count and overshoots to the Dashboard.
+
+Earlier note (superseded for unlabeled controls above): not reproduced in pausactive. Every clickable node in this Flutter app carried a semantics label
 (`content-desc`); unnamed nodes are skipped by the same rule as `snapshot.js` and covered by an offline test, but I had no
 unlabeled control to try on a device. Known limits: ~5-20 s per decision (nimble), ASCII-only typing, an ad WebView
 shows up as a control named by its click URL, custom-drawn UI is invisible, and DONE is still not proof.

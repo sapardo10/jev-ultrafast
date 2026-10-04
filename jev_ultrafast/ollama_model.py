@@ -73,12 +73,20 @@ def choose_target(engine, body, goal, operation, candidates, usage):
         ]
 
 
+def shares_word(label, goal):
+    words = {w for w in "".join(c if c.isalnum() else " " for c in label.lower()).split() if len(w) >= 4}
+    return any(w in goal.lower() for w in words)
+
+
 def done_label(history, state, goal=""):
     """Nimble weighs option text over instructions: cite the evidence that the last click took effect."""
     last = history[-1] if history else None
     if not last or last.get("kind") != "click" or not last.get("page_changed"):
         return laya_model.DONE
     clicked = last["action"].split("\n")[0].strip()[:60]
+    if state.get("native") and not shares_word(clicked, goal):
+        # A native "Allow"/"Next" tap unrelated to the goal is no evidence of completion; do not nudge to DONE.
+        return laya_model.DONE
     label = "%s Last action clicked '%s' and the page changed; if that completes the goal, choose DONE." % (
         laya_model.DONE,
         clicked,

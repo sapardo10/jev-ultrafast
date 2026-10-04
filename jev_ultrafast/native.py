@@ -71,6 +71,14 @@ def name_of(node):
     return " ".join((own or descendant_text(node)).split())  # Flutter tabs: "Settings\nTab 2 of 2" is one label
 
 
+def position_name(bounds, width, height):
+    """"top left" etc. for a control that has no accessible name (an icon-only hamburger)."""
+    x, y = (bounds[0] + bounds[2]) / 2 / (width or 1), (bounds[1] + bounds[3]) / 2 / (height or 1)
+    vertical = "top" if y < 0.2 else "bottom" if y > 0.8 else "middle"
+    horizontal = "left" if x < 0.33 else "right" if x > 0.67 else "center"
+    return f"{vertical} {horizontal}"
+
+
 def role_of(node):
     cls = (node.get("class") or "").rsplit(".", 1)[-1]
     if node.get("password") == "true":
@@ -120,6 +128,10 @@ def parse_screen(xml_text):
                 scrollables.append({"bounds": bounds, "area": (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])})
             role = role_of(node)
             label = name_of(node) if role else ""
+            area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
+            if role == "button" and not label and node.get("clickable") == "true" and area < width * height / 8:
+                # Compact unnamed control: offered by where it is, so the model can still reach it (never coordinates).
+                label = f"Unnamed icon button ({position_name(bounds, width, height)} of the screen)"
             centre = ((bounds[0] + bounds[2]) // 2, (bounds[1] + bounds[3]) // 2)
             visible_centre = 0 <= centre[0] < width and 0 <= centre[1] < height
             if role and label and node.get("enabled", "true") == "true" and visible_centre:
