@@ -1,0 +1,230 @@
+"""Offline contracts for native Android screens: parsing, freshness, input safety, prompts. No device."""
+
+import pytest
+
+from jev_ultrafast import ollama_model, questions
+from jev_ultrafast.browser import StalePage
+from jev_ultrafast.native import NativeError, NativeScreen, adb_text, build_page, extract_xml, parse_screen
+
+PKG = "com.example.app"
+
+
+def node(attrs, children=""):
+    base = {"class": "android.view.View", "package": PKG, "bounds": "[0,0][1080,200]", "enabled": "true"}
+    base.update(attrs)
+    body = " ".join('%s="%s"' % item for item in base.items())
+    return "<node %s>%s</node>" % (body, children)
+
+
+def screen(*nodes):
+    return '<?xml version="1.0"?><hierarchy rotation="0">%s</hierarchy>' % "".join(nodes)
+
+
+XML = screen(
+    node({"bounds": "[0,0][1080,2400]"}),  # window root: the display size
+    node({"package": "com.android.systemui", "text": "12:00", "clickable": "true", "bounds": "[0,0][1080,80]"}),
+    node({"class": "android.widget.TextView", "text": "Display", "bounds": "[0,100][1080,180]"}),
+    node(
+        {"clickable": "true", "bounds": "[0,200][1080,400]"},
+        node({"class": "android.widget.TextView", "text": "Dark theme", "bounds": "[0,200][800,300]"})
+        + node(
+            {"class": "android.widget.Switch", "checkable": "true", "checked": "true", "bounds": "[900,250][1000,350]"}
+        ),
+    ),
+    node({"clickable": "true", "content-desc": "", "text": "", "bounds": "[0,400][100,500]"}),  # unnamed icon
+    node({"clickable": "true", "text": "Off", "enabled": "false", "bounds": "[0,500][1080,600]"}),
+    node({"clickable": "true", "text": "Below", "bounds": "[0,2500][1080,2600]"}),  # off-screen
+    node({"class": "android.widget.EditText", "password": "true", "text": "secret", "bounds": "[0,600][1080,700]"}),
+    node({"class": "android.widget.EditText", "hint": "Search", "text": "", "bounds": "[0,700][1080,800]"}),
+    node({"scrollable": "true", "bounds": "[0,200][1080,2300]"}),
+    node({"class": "android.widget.FrameLayout", "bounds": "[0,2300][1080,2400]"}),
+)
+
+
+def test_skips_disabled_offscreen_unnamed_password_and_systemui():
+    elements, scrollables, text, size = parse_screen(XML)
+    assert [e["label"] for e in elements] == ["Dark theme", "Search"]
+    assert size == (1080, 2400)
+    assert text == ["Display"]  # the row's own label is not repeated as plain text
+    assert len(scrollables) == 1
+
+
+def test_row_without_text_takes_name_and_switch_state_from_descendants():
+    elements, *_ = parse_screen(XML)
+    row = elements[0]
+    assert row["role"] == "button" and row["checked"] == "true" and row["label"] == "Dark theme"
+
+
+def test_unlabelled_semantics_node_is_invisible_like_the_web_hamburger():
+    flutter = screen(node({"clickable": "true", "bounds": "[0,0][120,120]"}))
+    assert parse_screen(flutter)[0] == []
+
+
+def test_page_has_browser_shape_and_control_actions():
+    page = build_page(XML, PKG + "/.Main")
+    assert page["url"] == PKG + "/.Main" and page["native"] and page["title"] == "Main"
+    ids = [a["id"] for a in page["actions"]]
+    assert ids[:2] == ["e1", "e2"] and {"scroll_down", "scroll_up", "back", "wait"} <= set(ids)
+    assert page["guards"].keys() == {"1", "2"} and page["page_key"] and page["marker"]
+    assert next(a for a in page["actions"] if a["id"] == "e2")["kind"] == "fill"
+
+
+def test_marker_ignores_geometry_but_guard_tracks_it_and_state():
+    moved = XML.replace("[0,200][1080,400]", "[0,210][1080,410]")
+    a, b = build_page(XML, PKG + "/.Main"), build_page(moved, PKG + "/.Main")
+    assert a["marker"] == b["marker"] and a["guards"]["1"] != b["guards"]["1"]
+    toggled = XML.replace('checked="true"', 'checked="false"')
+    assert build_page(toggled, PKG + "/.Main")["guards"]["1"] != a["guards"]["1"]
+
+
+def test_extract_xml_strips_status_line_and_rejects_garbage():
+    dumped = "<?xml version='1.0'?><hierarchy></hierarchy>\nUI hierchary dumped to: /dev/tty"
+    assert extract_xml(dumped).endswith("</hierarchy>")
+    with pytest.raises(NativeError, match="ERROR: could not get idle state"):
+        extract_xml("ERROR: could not get idle state")
+
+
+@pytest.mark.parametrize("value, expected", [("a b", "a%sb"), ("50%", "50%%"), ("x&y", "x\\&y")])
+def test_adb_text_escapes_shell_metacharacters(value, expected):
+    assert adb_text(value) == expected
+
+
+@pytest.mark.parametrize("value", ["café", "日本", "tab\there"])
+def test_adb_text_refuses_non_ascii_before_any_input(value):
+    with pytest.raises(NativeError, match="ASCII"):
+        adb_text(value)
+
+
+class FakeScreen(NativeScreen):
+    def __init__(self, pages):
+        self.serial, self.package, self.after_input, self.mobile = "emu", PKG, None, True
+        self.sleep, self.pages, self.sent = lambda _s: None, list(pages), []
+
+    def read(self):
+        return self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
+
+    def shell(self, *args):
+        self.sent.append(args)
+
+
+def pages(xml=XML):
+    return build_page(xml, PKG + "/.Main")
+
+
+def test_tap_uses_bounds_centre_after_fresh_check():
+    page = pages()
+    device = FakeScreen([page])
+    device.act(page["actions"][0], page)
+    assert device.sent == [("input", "tap", "540", "300")]
+
+
+def test_stale_screen_blocks_input():
+    page = pages()
+    device = FakeScreen([pages(XML.replace("Dark theme", "Light theme"))])
+    with pytest.raises(StalePage):
+        device.act(page["actions"][0], page)
+    assert device.sent == []
+
+
+def test_unicode_text_is_refused_without_touching_the_device():
+    page = pages()
+    device = FakeScreen([page])
+    with pytest.raises(NativeError):
+        device.act(page["actions"][1], page, text="café")
+    assert device.sent == []
+
+
+def test_fill_taps_clears_then_types():
+    page = pages()
+    device = FakeScreen([page])
+    device.act(page["actions"][1], page, text="dark mode")
+    assert [c[1] for c in device.sent] == ["tap", "keyevent", "text"] and device.sent[-1][-1] == "dark%smode"
+
+
+def test_back_and_scroll_are_single_input_calls():
+    page = pages()
+    device = FakeScreen([page])
+    back = next(a for a in page["actions"] if a["kind"] == "back")
+    device.act(back, page)
+    down = next(a for a in page["actions"] if a["id"] == "scroll_down")
+    device.act(down, page)
+    assert device.sent[0] == ("input", "keyevent", "4")
+    swipe = device.sent[1]
+    assert swipe[:2] == ("input", "swipe") and int(swipe[3]) > int(swipe[5])  # finger moves up to scroll down
+
+
+def test_observe_waits_for_two_identical_reads_and_defers_to_logged_execution():
+    first, settled = pages(XML.replace("Dark theme", "Dark")), pages()
+    device = FakeScreen([first, settled, settled])
+    device.after_input = {"id": "e1"}
+    page = device.observe(screenshot=False)
+    assert page["marker"] == settled["marker"] and "fingerprint" in page and device.after_input is None
+
+
+def test_back_is_a_decision_operation_and_screens_are_described_not_urled():
+    page = build_page(XML, PKG + "/.Main")
+    page["fingerprint"] = "x"
+
+    class Engine(ollama_model.OllamaEngine):
+        def __init__(self):
+            super().__init__(base_url="http://fake", model="fake")
+            self.calls = []
+
+        def predict(self, state, questions_):
+            self.calls.append((state, questions_))
+            return {
+                "answers": {
+                    q: {
+                        "choice": "BACK",
+                        "confidence": 1.0,
+                        "probabilities": {k: float(k == "BACK") for k in v["criteria"]},
+                    }
+                    for q, v in questions_.items()
+                }
+            }
+
+    engine = Engine()
+    decision = ollama_model.choose(page, "go back", [], engine=engine)
+    state, asked = engine.calls[0]
+    assert decision["choice"] == "back" and "BACK" in asked["operation"]["criteria"]
+    assert state["screen"] == {"app": PKG, "screen": ".Main"} and "page" not in state
+    assert "native app screen" in asked["operation"]["instructions"]
+
+
+def test_web_prompt_is_unchanged():
+    assert questions.next_action({"url": "https://x"}) == questions.NEXT_ACTION
+
+
+class Foreign(NativeScreen):
+    def __init__(self, activity, alive):
+        self.serial, self.package, self.after_input, self.mobile = "emu", PKG, None, True
+        self.sleep, self.front, self.is_alive = lambda _s: None, activity, alive
+
+    def foreground(self):
+        return self.front
+
+    def alive(self):
+        return self.is_alive
+
+    def dump(self):
+        return XML
+
+
+def test_system_dialog_over_a_live_app_is_observed_not_an_error():
+    dialog = "com.google.android.permissioncontroller/.GrantPermissionsActivity"
+    page = Foreign(dialog, True).read()
+    assert page["url"] == dialog and page["actions"]
+
+
+@pytest.mark.parametrize(
+    "front, alive", [("", True), ("com.google.android.apps.nexuslauncher/.Launcher", True), ("com.other/.A", False)]
+)
+def test_left_or_dead_app_is_an_error(front, alive):
+    with pytest.raises(NativeError, match="not in the foreground"):
+        Foreign(front, alive).read()
+
+
+def test_multiline_flutter_semantics_label_is_one_line():
+    tab = node({"clickable": "true", "content-desc": "Settings\nTab 2 of 2"})
+    xml = screen(node({"bounds": "[0,0][1080,2400]"}), tab)
+    assert parse_screen(xml)[0][0]["label"] == "Settings Tab 2 of 2"

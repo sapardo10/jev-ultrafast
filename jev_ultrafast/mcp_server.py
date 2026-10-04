@@ -72,9 +72,21 @@ def ensure_android_chrome(serial):
     os.environ["BU_CDP_WS"] = websocket
 
 
+def ensure_android_app():
+    """A native app needs a device and adb only (no Chrome, no CDP); JEV_ANDROID_SERIAL picks the device."""
+    from .android import check_device
+
+    serial = os.environ.get("JEV_ANDROID_SERIAL")
+    if not serial:
+        raise JevError("JEV_ANDROID_APP needs JEV_ANDROID_SERIAL (`adb devices`); jev never guesses a device.")
+    check_device(serial)
+
+
 def ensure_chrome():
     if EXTERNAL_CDP_WS:
         return
+    if os.environ.get("JEV_ANDROID_APP"):
+        return ensure_android_app()
     if os.environ.get("JEV_IOS_UDID"):
         from .webdriver import ensure_ios
 
@@ -150,7 +162,7 @@ def explain_error(error):
     serial = os.environ.get("JEV_ANDROID_SERIAL")
     if serial:
         try:
-            cause = diagnose(serial)
+            cause = diagnose(serial, os.environ.get("JEV_ANDROID_APP"))
         except Exception:
             cause = None
         if cause:
@@ -262,8 +274,9 @@ def _browser_task(url, goal, max_steps, screenshot, return_text=False):
         if screenshot and state["page"].get("screenshot"):
             import base64
 
-            path = SCREENSHOT_DIR / f"{int(time.time() * 1000)}.jpg"
-            path.write_bytes(base64.b64decode(state["page"]["screenshot"]))
+            image = base64.b64decode(state["page"]["screenshot"])
+            path = SCREENSHOT_DIR / f"{int(time.time() * 1000)}.{'png' if image[:4] == b'\x89PNG' else 'jpg'}"
+            path.write_bytes(image)
             result["screenshot"] = str(path)
     return json.dumps(result, indent=1)
 

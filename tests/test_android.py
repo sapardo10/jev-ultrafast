@@ -152,7 +152,7 @@ def test_explain_error(monkeypatch):
     assert mcp_server.explain_error(ValueError("bad goal")) is None
     assert mcp_server.explain_error(AndroidError("device offline")) is None
     monkeypatch.setenv("JEV_ANDROID_SERIAL", "s")
-    monkeypatch.setattr(mcp_server, "diagnose", lambda serial: "Chrome gone")
+    monkeypatch.setattr(mcp_server, "diagnose", lambda serial, app=None: "Chrome gone")
     assert mcp_server.explain_error(RuntimeError("no close frame")) == "Chrome gone"
 
 

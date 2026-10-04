@@ -4,7 +4,7 @@ import os
 import time
 
 from .model import action_space, validate_choice
-from .questions import NEXT_ACTION, TARGET
+from .questions import TARGET, next_action
 
 OPERATIONS = {
     "CLICK": "Click a visible element, button, link, menu option, autocomplete suggestion, or calendar day.",
@@ -55,9 +55,14 @@ def compact_element(element):
 
 
 def page_state(state, goal, history, elements):
+    where = (
+        {"app": state["package"], "screen": state["url"].split("/", 1)[-1]}
+        if state.get("native")
+        else {"url": state["url"], "title": state["title"]}
+    )
     return {
         "goal": goal,
-        "page": {"url": state["url"], "title": state["title"]},
+        "screen" if state.get("native") else "page": where,
         "elements": [compact_element(element) for element in elements],
         "recent_actions": [
             {key: h.get(key) for key in ("action", "kind", "text", "page_changed")} for h in history[-10:]
@@ -139,7 +144,7 @@ def choose(state, goal, history, engine=None):
         "operation": {
             "type": "choice",
             "criteria": labels,
-            "instructions": "Goal: %s\n%s" % (goal, NEXT_ACTION),
+            "instructions": "Goal: %s\n%s" % (goal, next_action(state)),
         }
     }
     layouts = {}

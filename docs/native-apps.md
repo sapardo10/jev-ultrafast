@@ -1,7 +1,27 @@
-# Design note: native apps (not implemented)
+# Native apps
 
-The DOM snapshot has no DOM in a native app, so none of this is built. The loop stays
+**Android is implemented as a spike** (`jev_ultrafast/native.py`, `JEV_ANDROID_APP=<package>`); iOS is still only this
+design. The DOM snapshot has no DOM in a native app, so the loop stays
 `page -> indexed elements -> operation + target -> execution`; only the page source changes.
+
+## Android spike results (emulator, Ollama nimble, 2026-10-04)
+
+| Task | Run | Status | Steps | Seconds | Verified |
+|---|---|---|---|---|---|
+| Settings: "Turn on dark theme" | 1 | done | 2 | 66 | `cmd uimode night` = yes, screenshot shows switch on |
+| Settings: "Turn off dark theme" | 2 | done | 1 | 19 | `cmd uimode night` = no |
+| Flutter debug app (pausactive): "Tap Next twice" (app already past welcome) | 1 | done, **goal not met** | 1 | 24 | Model chose DONE after a permission "Allow"; screenshot shows Dashboard. A false DONE. |
+| Same app, fresh data: "Next until Dashboard shown" | 2 | done | 5 | 69 | screenshot: Dashboard (granted the notification permission on the test AVD) |
+
+Fixed on the way: a system permission dialog over a live app was reported as "app not in foreground"; screen size was
+taken from the largest bounds (off-screen rows counted); multi-line Flutter labels ("Settings\nTab 2 of 2").
+
+Not reproduced: the unlabeled-hamburger problem. Every clickable node in this Flutter app carried a semantics label
+(`content-desc`); unnamed nodes are skipped by the same rule as `snapshot.js` and covered by an offline test, but I had no
+unlabeled control to try on a device. Known limits: ~5-20 s per decision (nimble), ASCII-only typing, an ad WebView
+shows up as a control named by its click URL, custom-drawn UI is invisible, and DONE is still not proof.
+
+## Design (original note)
 
 ## Accessibility-tree sources
 

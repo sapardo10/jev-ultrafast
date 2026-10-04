@@ -13,7 +13,7 @@ import time
 
 import httpx
 
-from .questions import NEXT_ACTION, TARGET, TEXT_VALUE
+from .questions import TARGET, TEXT_VALUE, next_action
 
 CLIENT = httpx.Client(http2=True, timeout=25)
 
@@ -118,7 +118,11 @@ def choose_typesafe(state, goal, history):
     operations.update({key: value["label"] for key, value in controls.items()})
     operations.update(DONE="Every requirement is visibly satisfied.", BLOCKED="No supported operation can progress.")
     questions = {
-        "operation": {"type": "choice", "criteria": operations, "instructions": {"goal": goal, "rules": NEXT_ACTION}}
+        "operation": {
+            "type": "choice",
+            "criteria": operations,
+            "instructions": {"goal": goal, "rules": next_action(state)},
+        }
     }
     for operation, candidates in targets.items():
         questions[operation.lower() + "_target"] = {
@@ -131,7 +135,7 @@ def choose_typesafe(state, goal, history):
                 }
                 for index, a in candidates.items()
             },
-            "instructions": {"goal": goal, "operation": operation, "rules": [NEXT_ACTION, TARGET]},
+            "instructions": {"goal": goal, "operation": operation, "rules": [next_action(state), TARGET]},
         }
     body = {
         "model": os.environ.get("TYPESAFE_MODEL", "jev-latest"),

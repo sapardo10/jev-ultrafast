@@ -12,7 +12,7 @@ import time
 
 from . import laya_model
 from .model import action_space, post_json, validate_choice
-from .questions import NEXT_ACTION
+from .questions import next_action
 
 MAX_CANDIDATES = 26
 FINALISTS_PER_CHUNK = 2
@@ -98,7 +98,7 @@ def choose(state, goal, history, engine=None):
         labels["TYPE_TEXT"] += " Empty fields: %s." % ", ".join(empty[:6]) if empty else " Every field has a value."
     labels.update({key: value["label"] for key, value in controls.items()})
     labels.update(DONE=done_label(history, state, goal), BLOCKED=laya_model.BLOCKED)
-    question = {"type": "choice", "criteria": labels, "instructions": "Goal: %s\n%s" % (goal, NEXT_ACTION)}
+    question = {"type": "choice", "criteria": labels, "instructions": "Goal: %s\n%s" % (goal, next_action(state))}
     body = laya_model.page_state(state, goal, history, elements)
     usage = {}
     started = time.perf_counter()

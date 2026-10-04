@@ -33,7 +33,12 @@ class StalePage(ValueError):
 
 
 def open_browser(url):
-    """CDP Chrome (desktop or Android) by default; iOS Safari over WebDriver when JEV_IOS_UDID is set."""
+    """CDP Chrome (desktop or Android) by default; a native Android app when JEV_ANDROID_APP is set;
+    iOS Safari over WebDriver when JEV_IOS_UDID is set."""
+    if os.environ.get("JEV_ANDROID_APP"):
+        from .native import NativeScreen
+
+        return NativeScreen(url, os.environ.get("JEV_ANDROID_SERIAL", ""), os.environ["JEV_ANDROID_APP"])
     if os.environ.get("JEV_IOS_UDID"):
         from .webdriver import WebDriverBrowser
 

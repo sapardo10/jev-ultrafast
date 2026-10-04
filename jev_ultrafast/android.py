@@ -140,11 +140,14 @@ def ensure_android(serial, port, websocket_for, boot_timeout=120, wait=20):
     )
 
 
-def diagnose(serial):
-    """After a mid-run failure: say what actually died (device, Chrome, or neither). None when all is well."""
+def diagnose(serial, app=None):
+    """After a mid-run failure: say what actually died (device, Chrome/app, or neither). None when all is well."""
     try:
         check_device(serial)
-        if not chrome_running(serial):
+        if app:
+            if not adb(serial, "shell", "pidof", app, check=False):
+                return f"App {app} is no longer running on '{serial}'; it was closed or crashed mid-task."
+        elif not chrome_running(serial):
             return f"Chrome ({CHROME_PACKAGE}) is no longer running on '{serial}'; it was closed or crashed mid-task."
     except AndroidError as error:
         return f"{error} The device went away mid-task."

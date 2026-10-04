@@ -176,7 +176,17 @@ Failures return JSON with `status: "error"` (or `"timeout"`) and a `hint` that s
 offline/unauthorized/absent, emulator still booting, dead port forward, Chrome closed or crashed mid-task,
 Appium down, simulator not booted, WebDriver session gone, a page that never settles.
 
-Limits: native apps are out of scope (no DOM; see [docs/native-apps.md](docs/native-apps.md)). Elements that expose no
+**Native Android apps (spike).** No browser at all: set `JEV_ANDROID_APP=<package>` next to `JEV_ANDROID_SERIAL` and
+jev reads the screen with `adb exec-out uiautomator dump`, builds the same page dict (`url` = `package/activity`,
+actions `e1..eN`, markers, guards), and acts with `adb shell input` (tap the bounds centre, swipe inside the
+largest scrollable, `input text`, and a new `BACK` operation). Disabled, off-screen, unnamed and password nodes are
+not offered; a Settings row takes its name and switch state from its children. Typing is ASCII only (`input text`);
+anything else is refused before touching the device. `browser_task`'s `url` is optional: pass an activity
+(`.MainActivity`) or leave it empty for the launcher activity. Use a dedicated adb server
+(`ANDROID_ADB_SERVER_PORT=5038`) and `-port` for a test emulator: other Android Studio/Gradle runs attach to all devices.
+See [docs/native-apps.md](docs/native-apps.md) for results and limits.
+
+Limits: elements that expose no
 role and no name (an icon-only hamburger) are not offered to the model, so some mobile layouts cannot be driven. On iOS,
 scroll is a JS scroll, screenshots are full device resolution, and typing uses WebDriver keys. Other Android emulators or
 test runners attached to the same adb server can steal the foreground from Chrome; use a dedicated adb server or device.
