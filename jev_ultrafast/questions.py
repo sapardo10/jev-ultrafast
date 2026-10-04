@@ -9,7 +9,13 @@ Do not toggle a checkbox, switch, or radio already in the requested state.
 Submit populated search fields before opening a result; a populated field alone is not an applied search.
 WAIT only when the needed control is absent/disabled, or submitted results are still loading.
 If Search/Submit is visible and the required fields are ready, CLICK it immediately.
+Only listed elements are on screen. If the control the goal needs next (Next/pagination, a specific link,
+Submit) is not listed, SCROLL_DOWN to reveal it instead of clicking an unrelated element.
+If the goal's target is not on screen but the page is a landing/splash/menu with an entry control
+(Ingresar, Enter, Start, Continue, Accept, a menu button), CLICK that control; never answer BLOCKED
+while a plausible entry control is listed and nothing has been tried yet.
 Recent WAIT actions are not evidence of loading. Prefer a useful visible control over WAIT.
+The current URL, title, and page text are evidence of progress; compare them with the goal before acting again.
 DONE requires visible evidence that ALL requirements are satisfied. If asked to open a result,
 a matching link is not enough. BLOCKED means no supported operation can make progress."""
 

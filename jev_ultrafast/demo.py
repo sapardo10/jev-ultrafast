@@ -10,6 +10,8 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from .agent import Agent
+from .local_llm import model_name as local_model_name
+from .model import backend as decision_backend
 from .questions import MAX_STEPS
 
 ROOT = Path(__file__).parent
@@ -31,7 +33,8 @@ def load_environment():
 
 def response_state():
     state = AGENT.snapshot() if AGENT else {"page": None, "status": "idle", "history": [], "decision": None}
-    return {**state, "text_model": os.environ.get("TEXT_MODEL", "deepseek-chat"), "max_steps": MAX_STEPS}
+    text_model = os.environ.get("TEXT_MODEL") if os.environ.get("TEXT_MODEL_API_KEY") else local_model_name()
+    return {**state, "text_model": text_model, "max_steps": MAX_STEPS}
 
 
 def close_browser():
@@ -128,8 +131,22 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
+def warm_engine():
+    name = decision_backend()
+    if name == "laya":
+        from .laya_model import load_engine
+
+        load_engine()
+    elif name in {"local-llm", "llm"} and not os.environ.get("LOCAL_LLM_BASE_URL"):
+        from .local_llm import load_runtime
+
+        load_runtime()
+
+
 def main():
     load_environment()
+    print("Warming the local decision model…", flush=True)
+    threading.Thread(target=warm_engine, daemon=True).start()
     atexit.register(close_browser)
     server = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)
     print(f"Jev Ultrafast: {ORIGIN}", flush=True)

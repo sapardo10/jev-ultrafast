@@ -99,8 +99,42 @@
   const omitted_actions=Math.max(0,actions.length-250);
   actions.splice(250);
   actions.forEach((a,i)=>a.id='e'+(i+1));
-  if (scrollY+innerHeight<height-2) actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down',delta:560});
-  if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-560});
+  if (scrollY+innerHeight<height-2) {
+    // Name what lies below so a decision model knows scrolling reaches e.g. Next or Submit.
+    const below=[];
+    for (const e of document.querySelectorAll(selector)) {
+      const r=e.getBoundingClientRect(), label=safe(e) && visible(e) && role(e) && name(e);
+      if (label && r.width>0 && r.height>0 && r.top>=innerHeight) below.push({label:label.trim().slice(0,24),top:r.top,
+        rank:(e.matches('[rel~="next"],[rel~="prev"],nav *,[role="navigation"] *,.pagination *,.pager *,'+
+          'button,[type="submit"],[role="button"]') ? 0 : 1)*1e6+r.top});
+    }
+    below.sort((a,b)=>a.rank-b.rank);
+    const key=below.filter(b=>b.rank<1e6), names=[...new Set((key.length ? key : below).map(b=>b.label))].slice(0,4);
+    // With a key control below, scrolling lands on it; otherwise page by most of a viewport.
+    const delta=key.length ? Math.max(120,key[0].top-innerHeight*0.6) : innerHeight*0.85;
+    actions.push({id:'scroll_down',kind:'scroll',delta:Math.round(delta),
+      label:'Scroll down'+(names.length ? ' to reach: '+names.join(', ') : '')});
+  }
+  if (scrollY>0) actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up',delta:-Math.round(innerHeight*0.85)});
+  // Map apps keep the document fixed and scroll a side panel; wheel input must land on that panel.
+  let panel=null, panelArea=0;
+  for (const e of document.querySelectorAll('div,section,aside,nav,ul,main')) {
+    if (e.scrollHeight<=e.clientHeight+2 || !['auto','scroll'].includes(getComputedStyle(e).overflowY) || !visible(e)) continue;
+    const r=e.getBoundingClientRect();
+    const w=Math.max(0,Math.min(r.right,innerWidth)-Math.max(r.left,0));
+    const h=Math.max(0,Math.min(r.bottom,innerHeight)-Math.max(r.top,0));
+    if (w*h>panelArea) { panelArea=w*h; panel=e; }
+  }
+  if (panel) {
+    const r=panel.getBoundingClientRect();
+    const at={x:Math.round(Math.max(r.left,0)+Math.min(r.width,innerWidth-Math.max(r.left,0))/2),
+      y:Math.round(Math.max(r.top,0)+Math.min(r.height,innerHeight-Math.max(r.top,0))/2)};
+    const step=Math.round(panel.clientHeight*0.7);
+    if (!actions.some(a=>a.id==='scroll_down') && panel.scrollTop+panel.clientHeight<panel.scrollHeight-2)
+      actions.push({id:'scroll_down',kind:'scroll',label:'Scroll down the panel for more options',delta:step,at});
+    if (!actions.some(a=>a.id==='scroll_up') && panel.scrollTop>0)
+      actions.push({id:'scroll_up',kind:'scroll',label:'Scroll up the panel',delta:-step,at});
+  }
   actions.push({id:'wait',kind:'wait',label:'Wait for the page to update'});
   return {url:location.href,title:document.title,w:innerWidth,h:innerHeight,text,
     scroll:{y:scrollY,height},actions,marker,page_key,guards,omitted_actions};

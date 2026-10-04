@@ -1,4 +1,10 @@
-"""TypeSafe makes choices; an optional small OpenAI-compatible model writes field values."""
+"""A decision model makes choices; a small text model writes field values.
+
+The decision backend is a local instruct model by default, TypeSafe's Jev when
+TYPESAFE_API_KEY is set, or Ollama's local System One API (DECISION_BACKEND=ollama).
+The text helper is OpenAI-compatible when TEXT_MODEL_API_KEY is set and a local
+instruct model otherwise.
+"""
 
 import json
 import math
@@ -13,16 +19,18 @@ CLIENT = httpx.Client(http2=True, timeout=25)
 
 
 def post_json(url, key, body):
+    headers = {"Authorization": f"Bearer {key}"} if key else {}
     for attempt in range(3):
         try:
-            response = CLIENT.post(url, json=body, headers={"Authorization": f"Bearer {key}"})
+            response = CLIENT.post(url, json=body, headers=headers)
         except httpx.HTTPError:
             raise RuntimeError("Model connection failed; no action executed.") from None
         if response.status_code in {429, 529, 503} and attempt < 2:
             time.sleep(0.5 * 2**attempt)
             continue
         if response.is_error:
-            raise RuntimeError(f"Model provider returned HTTP {response.status_code}; no action executed.")
+            detail = response.text[:300]
+            raise RuntimeError(f"Model provider returned HTTP {response.status_code}: {detail}; no action executed.")
         return response.json()
     raise RuntimeError("Model unavailable")
 
@@ -41,7 +49,7 @@ def validate_choice(answer, ids):
     except (KeyError, TypeError, ValueError):
         valid = False
     if not valid:
-        raise ValueError("Invalid TypeSafe response; no action executed.")
+        raise ValueError("Invalid model response; no action executed.")
     return answer
 
 
@@ -78,7 +86,28 @@ def action_space(actions):
     return elements, targets, controls
 
 
+def backend():
+    return os.environ.get("DECISION_BACKEND") or ("typesafe" if os.environ.get("TYPESAFE_API_KEY") else "local-llm")
+
+
 def choose(state, goal, history):
+    name = backend()
+    if name == "laya":
+        from . import laya_model
+
+        return laya_model.choose(state, goal, history)
+    if name in {"local-llm", "llm"}:
+        from . import local_llm
+
+        return local_llm.choose(state, goal, history)
+    if name == "ollama":
+        from . import ollama_model
+
+        return ollama_model.choose(state, goal, history)
+    return choose_typesafe(state, goal, history)
+
+
+def choose_typesafe(state, goal, history):
     elements, targets, controls = action_space(state["actions"])
     labels = {
         "CLICK": "Click an element, button, menu option, autocomplete suggestion, or calendar day.",
@@ -160,7 +189,9 @@ def field_context(goal, action, page, history):
 def field_text(context):
     key = os.environ.get("TEXT_MODEL_API_KEY")
     if not key:
-        raise ValueError("TYPE_TEXT needs TEXT_MODEL_API_KEY; no text is hardcoded or guessed by the executor.")
+        from . import local_text
+
+        return local_text.generate(context)
     base = os.environ.get("TEXT_MODEL_BASE_URL", "https://api.deepseek.com/v1").rstrip("/")
     model = os.environ.get("TEXT_MODEL", "deepseek-chat")
     reasoning = {"thinking": {"type": "disabled"}} if "api.deepseek.com/" in base else {"reasoning": {"effort": "low"}}

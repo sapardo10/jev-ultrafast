@@ -60,7 +60,7 @@ def test_invalid_choice_is_rejected(mutation):
         a["choice"] = "b"
     else:
         a["confidence"] = 5
-    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+    with pytest.raises(ValueError, match="Invalid model response"):
         model.validate_choice(a, {"a", "b"})
 
 
@@ -109,7 +109,7 @@ def test_click_cannot_consume_a_text_target(monkeypatch):
 
     monkeypatch.setenv("TYPESAFE_API_KEY", "test")
     monkeypatch.setattr(model, "post_json", post)
-    with pytest.raises(ValueError, match="Invalid TypeSafe"):
+    with pytest.raises(ValueError, match="Invalid model response"):
         model.choose(page(), "Find a book", [])
 
 
@@ -151,9 +151,12 @@ def test_quoted_task_text_still_uses_the_llm(monkeypatch):
     assert sent["goal"] == 'Fly from "Zurich" to London'
 
 
-def test_missing_text_credential_stops_before_guessing(monkeypatch):
+def test_text_failure_without_remote_credentials_stops_before_typing(monkeypatch):
+    from jev_ultrafast import local_text
+
     monkeypatch.delenv("TEXT_MODEL_API_KEY", raising=False)
-    with pytest.raises(ValueError, match="TEXT_MODEL_API_KEY"):
+    monkeypatch.setattr(local_text, "generate", Mock(side_effect=ValueError("nothing typed")))
+    with pytest.raises(ValueError, match="nothing typed"):
         model.field_text({"goal": 'Enter "Zurich"'})
 
 

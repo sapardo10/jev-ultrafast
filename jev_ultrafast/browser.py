@@ -6,12 +6,22 @@ import sys
 import time
 from pathlib import Path
 
-from browser_harness.admin import ensure_daemon
-from browser_harness.helpers import cdp
+from ._harness import cdp, ensure_daemon
 
 # Atomically read visible content and controls, preserving actual DOM node identity.
 READ_STATE = Path(__file__).with_name("snapshot.js").read_text()
 MARKER = f"(() => {{ const state={READ_STATE}; return state?.marker ?? null; }})()"
+
+# Resolve once the DOM has been quiet for `quiet` ms, or after `limit` ms. Async content (price grids,
+# graphs, panels) renders after readyState is complete, so "loaded" is not "ready".
+SETTLE = """((quiet,limit)=>new Promise(resolve=>{
+  let timer; const done=()=>{observer.disconnect();clearTimeout(timer);resolve()};
+  const arm=()=>{clearTimeout(timer);timer=setTimeout(done,quiet)};
+  const observer=new MutationObserver(arm);
+  observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});
+  arm(); setTimeout(done,limit);
+}))"""
+
 
 class StalePage(ValueError):
     """A decision no longer refers to the observed page."""
@@ -31,6 +41,19 @@ class Browser:
             if self.evaluate("document.readyState") == "complete":
                 break
             time.sleep(0.02)
+        self.settle()
+
+    def settle(self, quiet=500, limit=6000):
+        """Wait for async content to stop changing; never fatal, the observe loop handles the rest."""
+        try:
+            self.call(
+                "Runtime.evaluate",
+                expression=f"{SETTLE}({int(quiet)},{int(limit)})",
+                awaitPromise=True,
+                returnByValue=True,
+            )
+        except RuntimeError:
+            pass
 
     def call(self, method, **params):
         return cdp(method, session_id=self.session, **params)
@@ -51,11 +74,16 @@ class Browser:
                     expression="""(action => new Promise(resolve => {
                       const field=window.__jevFast?.nodes.get(action.node);
                       const autocomplete=action.kind==='fill' && field?.getAttribute('role')==='combobox';
-                      let frames=0, stopped=false;
-                      const finish=()=>{stopped=true;resolve()};
-                      setTimeout(finish,autocomplete ? 200 : 50);
+                      let frames=0, stopped=false, quietTimer;
+                      const finish=()=>{stopped=true;observer.disconnect();resolve()};
+                      // Esri-style panels animate in after the click; wait for the DOM to go quiet.
+                      const quiet=()=>{clearTimeout(quietTimer);if(!autocomplete)quietTimer=setTimeout(finish,300)};
+                      const observer=new MutationObserver(quiet);
+                      observer.observe(document.documentElement,{subtree:true,childList:true,attributes:true,characterData:true});
+                      quiet();
+                      setTimeout(finish,autocomplete ? 1200 : 1500);
                       const ready=()=>{
-                        if (stopped) return;
+                        if (stopped || !autocomplete) return;
                         const ids=(field?.getAttribute('aria-controls')||field?.getAttribute('aria-owns')||'')
                           .split(/\\s+/).filter(Boolean);
                         const roots=ids.length ? ids.map(id=>document.getElementById(id)).filter(Boolean) : [document];
@@ -136,7 +164,8 @@ def browser_operation(request):
         action = request["action"]
         kind = action["kind"]
         if kind == "scroll":
-            call("Input.dispatchMouseEvent", type="mouseWheel", x=550, y=650, deltaX=0, deltaY=action["delta"])
+            at = action.get("at") or {"x": 550, "y": 650}
+            call("Input.dispatchMouseEvent", type="mouseWheel", x=at["x"], y=at["y"], deltaX=0, deltaY=action["delta"])
         elif kind != "wait":
             if type(action["node"]) is not int:
                 raise ValueError("Invalid observed node")

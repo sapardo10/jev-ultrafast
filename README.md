@@ -57,15 +57,63 @@ git clone https://github.com/browser-use/jev-ultrafast.git
 cd jev-ultrafast
 uv sync
 cp .env.example .env
-# Add TYPESAFE_API_KEY and TEXT_MODEL_API_KEY.
 uv run jev
 ```
+
+No API key is required. By default a local instruct model (`Qwen/Qwen3-1.7B` through transformers, or any OpenAI-compatible local server) answers the operation/target questions and writes `TYPE_TEXT` values. `DECISION_BACKEND=laya` selects the non-autoregressive Laya engine; `DECISION_BACKEND=typesafe` (or a `TYPESAFE_API_KEY`) selects TypeSafe's Jev. The first run downloads the selected checkpoint.
+
+Laya is the fastest option (~107 ms per decision, no text generation) but its own benchmarks describe the base checkpoints as near chance on out-of-domain typed decisions, and browser control is not one of its training workflows — measured here, its operation probabilities on real pages are near uniform. Treat Laya as a base to fine-tune (their Kaggle notebook), not a zero-shot browser policy. The local instruct model is the working default; decision quality is limited by the small model size, and the backend swap stays confined to one module in each case.
 
 Open **http://127.0.0.1:8766** and click **Start demo → Run automatically**. The inspector shows numbered elements, operation probabilities, target probabilities, and executed actions. **Choose next** pauses before execution.
 
 Chrome connects through [Browser Harness](https://github.com/browser-use/browser-harness), installed by `uv sync`. Run `uv run browser-harness --doctor` if it needs connecting. Allow remote debugging in Chrome when prompted.
 
-`TEXT_MODEL_API_KEY` is an OpenRouter key in the example configuration. The current demo uses `inception/mercury-2.5` with reasoning disabled. Gemini, GLM, and DeepSeek can also use the OpenAI-compatible text helper; configure the appropriate model, endpoint, and reasoning setting.
+### Use from any agent (MCP)
+
+`jev` ships an MCP server, `jev_ultrafast.mcp_server`, exposing one tool:
+
+- `browser_task(url, goal, max_steps=25, screenshot=False, return_text=False)` — runs the browser agent to completion and returns a JSON trace (status, final URL, actions). `screenshot=True` also saves a JPEG and returns its path; `return_text=True` adds the final page's visible text (`page_text`) so a caller can read a price or status. `done` means the agent stopped acting, not that the answer is right; verify with `page_text` or the screenshot.
+
+Register it once per agent, globally:
+
+```bash
+claude mcp add --scope user jev -- uv --directory ~/jev-ultrafast run python -m jev_ultrafast.mcp_server
+```
+
+```toml
+# ~/.codex/config.toml
+[mcp_servers.jev]
+command = "uv"
+args = ["--directory", "~/jev-ultrafast", "run", "python", "-m", "jev_ultrafast.mcp_server"]
+```
+
+OpenCode takes the same entry under `mcp` in `~/.config/opencode/opencode.json` (`"type": "local"`, `"command": [...]`). gstack runs inside these host sessions, so it inherits the tool.
+
+The server starts its own headless Chrome (CDP port 9333, profile `~/.cache/jev/chrome`, `JEV_HEADED=1` to show it) and its own Browser Harness daemon, so nothing needs to be running first. If `LOCAL_LLM_BASE_URL` is unreachable it falls back to the in-process model.
+
+### Local model configuration
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `DECISION_BACKEND` | `local-llm` | `local-llm`, `laya`, `typesafe` (auto-`typesafe` when `TYPESAFE_API_KEY` is set) |
+| `LOCAL_LLM_MODEL` | `Qwen/Qwen3-1.7B` | In-process instruct model for decisions and `TYPE_TEXT` |
+| `LOCAL_LLM_BASE_URL` | unset | OpenAI-compatible chat endpoint instead of in-process, e.g. `http://127.0.0.1:8080/v1` |
+| `LOCAL_LLM_API_KEY` | unset | Bearer token for that endpoint, if it needs one |
+| `LAYA_MODEL` | `convaiinnovations/laya` | Laya checkpoint for decisions |
+| `LAYA_SUBFOLDER` | `typed-decisions` | `typed-decisions` (fine-tuned), `root` (English base), or `multilingual` |
+| `LAYA_DEVICE` | auto | `mps`, `cuda`, or `cpu` |
+| `LAYA_MAX_LEN` | `2048` | State context budget in tokens |
+| `LAYA_HEAD_MAX_LEN` | `512` | Option budget shared by each question's choices |
+| `LAYA_CHUNK_SIZE` | `24` | Target candidates per question; larger pages are split into grouped heads |
+
+To serve the model with MLX instead of transformers:
+
+```bash
+mlx_lm.server --model mlx-community/Qwen3-1.7B-4bit --port 8080
+# .env: LOCAL_LLM_BASE_URL=http://127.0.0.1:8080/v1
+```
+
+The local backend audits the page against the goal first, then chooses one operation and target; invalid choices are retried once with the reason, then refused. In-process Qwen3-1.7B takes roughly 1–2.5 s per action on an M-series GPU; a served MLX model or a larger checkpoint improves both latency and decision quality. The text helper uses the OpenAI-compatible endpoint when `TEXT_MODEL_API_KEY` is set and the local model otherwise; a `{"text": null}` response stops the step instead of guessing a value.
 
 ## Use the library
 
