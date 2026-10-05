@@ -2,7 +2,7 @@
 
 import pytest
 
-from jev_ultrafast import ollama_model, questions
+from jev_ultrafast import native, ollama_model, questions
 from jev_ultrafast.browser import StalePage
 from jev_ultrafast.native import NativeError, NativeScreen, adb_text, build_page, extract_xml, parse_screen
 
@@ -105,6 +105,8 @@ class FakeScreen(NativeScreen):
     def __init__(self, pages):
         self.serial, self.package, self.after_input, self.mobile = "emu", PKG, None, True
         self.sleep, self.pages, self.sent = lambda _s: None, list(pages), []
+        self.scroll_probe, self.exhausted = None, set()
+        self.trail, self.undone = [], set()
 
     def read(self):
         return self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
@@ -136,19 +138,46 @@ def test_stale_screen_blocks_input():
     assert device.sent == []
 
 
-def test_unicode_text_is_refused_without_touching_the_device():
+def test_unicode_text_without_the_ime_is_refused_without_touching_the_device():
     page = pages()
     device = FakeScreen([page])
-    with pytest.raises(NativeError):
-        device.act(fill_action(page), page, text="café")
+    device.ime_available = lambda: False
+    with pytest.raises(NativeError, match="ADBKeyboard"):
+        device.act(fill_action(page), page, text="Bogot\u00e1")
     assert device.sent == []
+
+
+def test_unicode_text_goes_through_the_ime_and_restores_the_keyboard(monkeypatch):
+    page = pages()
+    device = FakeScreen([page])
+    device.ime_available = lambda: True
+    monkeypatch.setattr(native, "adb", lambda *a, **k: "com.google.android.inputmethod.latin/.LatinIME")
+    device.act(fill_action(page), page, text="Bogot\u00e1")
+    commands = [" ".join(c) for c in device.sent]
+    broadcast = next(c for c in commands if "ADB_INPUT_B64" in c)
+    assert broadcast.endswith("Qm9nb3TDoQ==")  # UTF-8 base64 of "Bogot\u00e1"
+    assert commands[-1] == "ime set com.google.android.inputmethod.latin/.LatinIME"
+    assert not any(c.startswith("input text") for c in commands)
 
 
 def test_fill_taps_clears_then_types():
     page = pages()
     device = FakeScreen([page])
+    device.keyboard_shown = lambda: False
     device.act(fill_action(page), page, text="dark mode")
     assert [c[1] for c in device.sent] == ["tap", "keyevent", "text"] and device.sent[-1][-1] == "dark%smode"
+
+
+def test_keyboard_is_dismissed_after_typing_only_when_it_is_showing():
+    page = pages()
+    device = FakeScreen([page])
+    device.keyboard_shown = lambda: True
+    device.act(fill_action(page), page, text="Jose")
+    assert device.sent[-1] == ("input", "keyevent", "4")
+    hidden = FakeScreen([page])
+    hidden.keyboard_shown = lambda: False
+    hidden.act(fill_action(page), page, text="Jose")
+    assert hidden.sent[-1][1] == "text"
 
 
 def test_back_and_scroll_are_single_input_calls():
@@ -209,6 +238,8 @@ class Foreign(NativeScreen):
     def __init__(self, activity, alive):
         self.serial, self.package, self.after_input, self.mobile = "emu", PKG, None, True
         self.sleep, self.front, self.is_alive = lambda _s: None, activity, alive
+        self.scroll_probe, self.exhausted = None, set()
+        self.trail, self.undone = [], set()
 
     def foreground(self):
         return self.front
@@ -324,3 +355,155 @@ def test_back_and_close_are_withheld_right_after_the_goals_own_control_was_opene
     assert list(ollama_model.drop_undo_targets(targets, late, goal)["CLICK"]) == ["2"]
     unrelated = [{"kind": "click", "page_changed": True, "action": "Menu"}]
     assert ollama_model.drop_undo_targets(targets, unrelated, goal) == targets
+
+
+def test_scroll_is_withdrawn_once_a_swipe_changed_nothing():
+    page = pages()
+    device = FakeScreen([page])
+    down = next(a for a in page["actions"] if a["id"] == "scroll_down")
+    device.act(down, page)
+    unchanged = device.observe(screenshot=False)  # same screen after the swipe: the end of the list
+    ids = [a["id"] for a in unchanged["actions"]]
+    assert "scroll_down" not in ids and "scroll_up" in ids
+    assert unchanged["marker"] == page["marker"]  # freshness still compares the unfiltered screen
+    moved = FakeScreen([pages(XML.replace("Dark theme", "Light theme"))])
+    moved.exhausted = device.exhausted
+    assert "scroll_down" in [a["id"] for a in moved.observe(screenshot=False)["actions"]]
+
+
+def test_a_click_that_back_reversed_is_not_offered_again_on_that_screen():
+    page = pages()
+    device = FakeScreen([page])
+    row = next(a for a in page["actions"] if a["label"] == "Dark theme")
+    device.act(row, page)
+    other = pages(XML.replace("Dark theme", "Sub screen"))
+    device.pages = [other]
+    device.act(next(a for a in other["actions"] if a["kind"] == "back"), other)
+    device.pages = [page]
+    back_home = device.observe(screenshot=False)
+    labels = [a["label"] for a in back_home["actions"] if a["kind"] == "click"]
+    assert "Dark theme" not in labels and any(name.startswith("Unnamed icon") for name in labels)
+    # A toggle clicked twice without BACK in between stays available.
+    page = pages()
+    again = FakeScreen([page])
+    again.act(row, page)
+    again.act(row, page)
+    assert any(a["label"] == "Dark theme" for a in again.observe(screenshot=False)["actions"])
+
+
+def test_back_that_exits_the_app_relaunches_it_instead_of_failing():
+    device = Foreign("com.google.android.apps.nexuslauncher/.NexusLauncherActivity", True)
+    device.trail = [("back", "k", "")]
+    launched = []
+
+    def relaunch(target=""):
+        launched.append(target)
+        device.front = PKG + "/.Main"
+
+    device.launch = relaunch
+    assert device.read()["url"] == PKG + "/.Main" and launched == [""]
+    device.front, device.trail = "com.google.android.apps.nexuslauncher/.A", [("click", "k", "x")]
+    with pytest.raises(NativeError, match="not in the foreground"):
+        device.read()
+    other = Foreign("com.other.app/.Main", True)  # BACK fell through to the previously used app
+    other.trail, other.launch = [("back", "k", "")], lambda target="": setattr(other, "front", PKG + "/.Main")
+    assert other.read()["url"] == PKG + "/.Main"
+
+
+def test_back_is_withdrawn_when_it_changed_nothing():
+    page = pages()
+    device = FakeScreen([page])
+    device.act(next(a for a in page["actions"] if a["kind"] == "back"), page)
+    assert "back" not in [a["id"] for a in device.observe(screenshot=False)["actions"]]
+
+
+
+def test_native_state_reports_opened_screens_and_typed_values_not_an_action_log():
+    from jev_ultrafast import laya_model
+
+    page = build_page(XML, PKG + "/.Main")
+    history = [
+        {"kind": "click", "page_changed": True, "action": "Display & touch — Dark theme, font size", "text": None},
+        {"kind": "fill", "page_changed": True, "action": "Search", "text": "dark"},
+        {"kind": "scroll", "page_changed": True, "action": "Scroll down", "text": None},
+    ]
+    body = laya_model.page_state(page, "g", history, [])
+    assert "recent_actions" not in body
+    assert body["opened_screens"] == ["Display & touch"] and body["typed"] == [{"field": "Search", "text": "dark"}]
+    web = laya_model.page_state({"url": "u", "title": "t", "text": "x"}, "g", history, [])
+    assert "recent_actions" in web and "opened_screens" not in web
+
+
+def test_native_history_key_comes_after_the_page_text():
+    from jev_ultrafast import laya_model
+
+    page = build_page(XML, PKG + "/.Main")
+    body = laya_model.page_state(page, "g", [{"kind": "click", "page_changed": True, "action": "Display"}], [])
+    keys = list(body)
+    assert keys.index("opened_screens") > keys.index("page_text")
+
+
+def test_blocked_is_asked_again_while_a_native_screen_can_still_scroll():
+    class Engine(ollama_model.OllamaEngine):
+        def __init__(self):
+            super().__init__(base_url="http://fake", model="fake")
+            self.operations = []
+
+        def predict(self, state, questions_):
+            answers = {}
+            for qid, q in questions_.items():
+                keys = list(q["criteria"])
+                first = "BLOCKED" if qid == "operation" and "BLOCKED" in keys else keys[0]
+                if qid == "operation":
+                    self.operations.append(set(keys))
+                probabilities = {k: float(k == first) for k in keys}
+                answers[qid] = {"choice": first, "confidence": 1.0, "probabilities": probabilities}
+            return {"answers": answers}
+
+    page = build_page(XML, PKG + "/.Main")
+    page["fingerprint"] = "x"
+    history = [{"kind": "fill", "page_changed": True, "action": "First name", "text": "Jose"}]
+    engine = Engine()
+    decision = ollama_model.choose(page, "Create a contact", history, engine=engine)
+    assert len(engine.operations) == 2 and "BLOCKED" not in engine.operations[1]
+    assert decision["operation"] != "BLOCKED"
+    page["actions"] = [a for a in page["actions"] if a["kind"] != "scroll"]  # end of the list: BLOCKED may stand
+    engine = Engine()
+    assert ollama_model.choose(page, "Create a contact", history, engine=engine)["operation"] == "BLOCKED"
+
+
+def test_a_transient_empty_foreground_is_waited_out():
+    device = Foreign("", True)
+    fronts = iter(["", "", PKG + "/.Main"])
+    device.foreground = lambda: next(fronts)
+    assert device.read()["url"] == PKG + "/.Main"
+
+
+def test_material_text_field_is_named_by_its_overlapping_label_not_its_contents():
+    field = node({"class": "android.widget.EditText", "text": "Jose", "bounds": "[100,300][900,450]"})
+    label = node({"class": "android.widget.TextView", "text": "First name", "bounds": "[130,300][400,340]"})
+    xml = screen(node({"bounds": "[0,0][1080,2400]"}), field, label)
+    (element,) = parse_screen(xml)[0]
+    assert element["label"] == "First name" and element["value"] == "Jose"
+    prefix = node({"class": "android.widget.EditText", "text": "+1", "bounds": "[100,500][900,650]"})
+    phone = node({"class": "android.widget.TextView", "text": "Phone", "bounds": "[130,500][260,540]"})
+    xml = screen(node({"bounds": "[0,0][1080,2400]"}), prefix, phone)
+    assert parse_screen(xml)[0][0]["label"] == "Phone"
+
+
+def test_edittext_covered_by_a_spinner_is_a_dropdown_not_a_text_field():
+    box = "[126,908][954,1076]"
+    field = node({"class": "android.widget.EditText", "text": "Mobile", "bounds": box})
+    spinner = node({"class": "android.widget.Spinner", "bounds": box})
+    plain = node({"class": "android.widget.EditText", "text": "", "hint": "Notes", "bounds": "[126,1916][954,2147]"})
+    elements = parse_screen(screen(node({"bounds": "[0,0][1080,2400]"}), field, spinner, plain))[0]
+    kinds = {e["label"]: (e["kind"], e["role"]) for e in elements}
+    assert kinds["Mobile"] == ("click", "combobox") and kinds["Notes"] == ("fill", "textbox")
+
+
+def test_field_label_skips_symbols_and_prefixes_inside_the_field():
+    field = node({"class": "android.widget.EditText", "text": "+1", "bounds": "[100,500][900,650]"})
+    flag = node({"class": "android.widget.TextView", "text": "\U0001f1fa\U0001f1f8", "bounds": "[110,520][160,560]"})
+    label = node({"class": "android.widget.TextView", "text": "Phone", "bounds": "[170,500][300,540]"})
+    xml = screen(node({"bounds": "[0,0][1080,2400]"}), field, flag, label)
+    assert parse_screen(xml)[0][0]["label"] == "Phone"

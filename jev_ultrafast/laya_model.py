@@ -54,20 +54,39 @@ def compact_element(element):
     return item
 
 
+def native_history(history):
+    """Screens opened and values typed, as plain facts. A log of "action, page_changed" makes nimble read the
+    opened screen as finished work and scroll or back out (CLICK 0.30 vs 0.95 on Settings > Display)."""
+    opened = [
+        h["action"].split("\n")[0].split(" — ")[0].strip()[:40]
+        for h in history[-8:]
+        if h.get("kind") == "click" and h.get("page_changed")
+    ]
+    typed = [{"field": h["action"].split(" — ")[0][:40], "text": h["text"]} for h in history[-8:] if h.get("text")]
+    return {"opened_screens": opened, **({"typed": typed} if typed else {})}
+
+
 def page_state(state, goal, history, elements):
     where = (
         {"app": state["package"], "screen": state["url"].split("/", 1)[-1]}
         if state.get("native")
         else {"url": state["url"], "title": state["title"]}
     )
+    recent = (
+        native_history(history)
+        if state.get("native")
+        else {
+            "recent_actions": [
+                {key: h.get(key) for key in ("action", "kind", "text", "page_changed")} for h in history[-10:]
+            ]
+        }
+    )
     return {
         "goal": goal,
         "screen" if state.get("native") else "page": where,
         "elements": [compact_element(element) for element in elements],
-        "recent_actions": [
-            {key: h.get(key) for key in ("action", "kind", "text", "page_changed")} for h in history[-10:]
-        ],
         "page_text": state["text"][:4000],
+        **recent,  # last: nimble weighs a history key placed before the page text over the controls themselves
     }
 
 

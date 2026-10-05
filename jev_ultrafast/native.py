@@ -79,6 +79,24 @@ def position_name(bounds, width, height):
     return f"{vertical} {horizontal}"
 
 
+def field_label(node, candidates):
+    """Material text fields draw their label as a separate TextView inside the field's bounds, not as its name."""
+    box = parse_bounds(node.get("bounds"))
+    if not box:
+        return ""
+    for other in candidates:
+        text = (other.get("text") or "").strip()
+        inner = parse_bounds(other.get("bounds"))
+        if (
+            other is not node and sum(c.isalpha() for c in text) >= 2  # a flag emoji or "+1" is not a label
+            and "EditText" not in (other.get("class") or "")
+            and other.get("clickable") != "true" and inner
+            and inner[0] >= box[0] and inner[1] >= box[1] and inner[2] <= box[2] and inner[3] <= box[3]
+        ):
+            return text
+    return ""
+
+
 def role_of(node):
     cls = (node.get("class") or "").rsplit(".", 1)[-1]
     if node.get("password") == "true":
@@ -106,6 +124,7 @@ def parse_screen(xml_text):
     """XML -> (elements, scrollables, text lines, (width, height)). Pure; the offline tests cover it."""
     root = ET.fromstring(xml_text)
     nodes = walk(root, [])
+    spinners = [parse_bounds(n.get("bounds")) for n in nodes if "Spinner" in (n.get("class") or "")]
     # The display is the first (window root) node's bounds; taking the max over all nodes would count off-screen rows.
     screen = next((b for b in (parse_bounds(n.get("bounds")) for n in nodes) if b), (0, 0, 0, 0))
     width, height = screen[2], screen[3]
@@ -127,7 +146,16 @@ def parse_screen(xml_text):
             if node.get("scrollable") == "true":
                 scrollables.append({"bounds": bounds, "area": (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])})
             role = role_of(node)
+            if role == "textbox" and any(s and s == bounds for s in spinners):
+                role = "combobox"  # a Spinner sits on this EditText: it opens a list, nothing is typed into it
             label = name_of(node) if role else ""
+            if role == "textbox":  # its label, not its current contents, names it (so it keeps its name once typed in)
+                label = (
+                    field_label(node, nodes)
+                    or (node.get("hint") or "").strip()
+                    or (node.get("content-desc") or "").strip()
+                    or label
+                )
             area = (bounds[2] - bounds[0]) * (bounds[3] - bounds[1])
             if role == "button" and not label and node.get("clickable") == "true" and area < width * height / 8:
                 # Compact unnamed control: offered by where it is, so the model can still reach it (never coordinates).
@@ -138,7 +166,7 @@ def parse_screen(xml_text):
                 element = {
                     "role": role, "label": label[:120], "bounds": bounds, "centre": centre,
                     "kind": "fill" if role == "textbox" else "click",
-                    "value": (node.get("text") or "") if role == "textbox" else "",
+                    "value": (node.get("text") or "") if role in {"textbox", "combobox"} else "",
                     "id_hint": (node.get("resource-id") or "").rsplit("/", 1)[-1],
                     "package": pkg,
                 }
@@ -217,11 +245,21 @@ def adb_text(value):
     return re.sub(r"([\\\"'`&|;<>()$*?!#~{}\[\]^])", r"\\\1", value.replace("%", "%%")).replace(" ", "%s")
 
 
+ADB_KEYBOARD = "com.android.adbkeyboard"
+ADB_KEYBOARD_IME = ADB_KEYBOARD + "/.AdbIME"
+
+
+def is_plain(value):
+    return value.isascii() and value.isprintable()
+
+
 class NativeScreen:
     """Browser-shaped view of one Android app, driven over adb."""
 
     def __init__(self, target, serial, package, start=True):
         self.serial, self.package, self.after_input = serial, package, None
+        self.scroll_probe, self.exhausted = None, set()
+        self.trail, self.undone = [], set()  # (kind, page_key, label); clicks that BACK reversed
         self.mobile = True
         self.sleep = time.sleep
         check_device(serial)
@@ -298,6 +336,16 @@ class NativeScreen:
 
     def read(self):
         activity = self.foreground()
+        for _ in range(8):  # an activity transition briefly reports no resumed activity
+            if activity:
+                break
+            self.sleep(0.4)
+            activity = self.foreground()
+        if self.trail and self.trail[-1][0] == "back" and not activity.startswith(self.package + "/"):
+            # BACK on the app's root screen exits to the home screen or the previous app. Reading is not a
+            # mutation: bring the target app back instead of driving something else.
+            self.launch()
+            activity = self.foreground()
         if not self.in_play(activity):
             raise NativeError(
                 f"{self.package} is not in the foreground (found {activity or 'none'}); "
@@ -319,6 +367,21 @@ class NativeScreen:
             if again["marker"] == page["marker"]:  # two identical reads: the screen has stopped animating
                 page = again
                 break
+        if self.scroll_probe:
+            action_id, marker = self.scroll_probe
+            self.scroll_probe = None
+            if page["marker"] == marker:  # the swipe moved nothing: this edge of the list is reached
+                self.exhausted.add((action_id, marker))
+        if len(self.trail) >= 2 and self.trail[-1][0] == "back" and self.trail[-2][0] == "click":
+            _, key, label = self.trail[-2]
+            if key == page["page_key"]:  # back on the screen the click started from: that click was a wrong turn
+                self.undone.add((key, label))
+        page["actions"] = [a for a in page["actions"] if (a["id"], page["marker"]) not in self.exhausted]
+        def reversed_click(a):
+            return a["kind"] == "click" and (page["page_key"], a["label"]) in self.undone
+
+        if any(a["kind"] == "click" and not reversed_click(a) for a in page["actions"]):
+            page["actions"] = [a for a in page["actions"] if not reversed_click(a)]  # never strand the model
         page["fingerprint"] = hash_of({k: page[k] for k in ("url", "text", "actions")})
         if screenshot:
             page["screenshot"] = self.screenshot()
@@ -334,31 +397,70 @@ class NativeScreen:
     def act(self, action, page, text=None):
         kind = action["kind"]
         if kind == "fill" and text is not None:
-            adb_text(text)  # refuse unsupported text before touching the device
+            if is_plain(text):
+                adb_text(text)
+            elif not self.ime_available():
+                # `input text` cannot type this; refuse before touching the device.
+                raise NativeError(
+                    "`adb shell input text` types ASCII only; this value has other characters (accents, CJK, emoji). "
+                    f"Install the ADBKeyboard IME ({ADB_KEYBOARD}) on the device and jev will use it."
+                )
         if not self.fresh(page, action):
             raise StalePage("Screen changed since this decision. Observe again.")
         if kind == "wait":
             self.sleep(0.3)
         elif kind == "back":
             self.shell("input", "keyevent", "4")
+            self.trail.append(("back", page["page_key"], ""))
+            self.scroll_probe = (action["id"], page["marker"])  # BACK that changes nothing (app root) is withdrawn
         elif kind == "scroll":
             at = action["at"]
             span = max(200, at["span"] // 3)
             start, end = at["y"] + span * action["delta"], at["y"] - span * action["delta"]
             self.shell("input", "swipe", str(at["x"]), str(start), str(at["x"]), str(end), "350")
+            self.scroll_probe = (action["id"], page["marker"])
         elif kind in {"click", "fill"}:
             x, y = self.centre(action)
             self.shell("input", "tap", str(x), str(y))
+            self.trail.append((kind, page["page_key"], action["label"]))
             if kind == "fill":
                 current = action.get("value") or ""
                 self.sleep(0.4)
                 self.shell("input", "keyevent", "KEYCODE_MOVE_END", *(["KEYCODE_DEL"] * (len(current) + 2)))
-                if text:
+                if text and is_plain(text):
                     self.shell("input", "text", adb_text(text))
+                elif text:
+                    self.type_unicode(text)
+                self.dismiss_keyboard()
         else:
             raise NativeError(f"Unsupported action {kind}")
         self.after_input = action if kind != "wait" else None
         return {"executed": action["id"]}
+
+    def keyboard_shown(self):
+        return "mInputShown=true" in adb(self.serial, "shell", "dumpsys", "input_method", check=False)
+
+    def dismiss_keyboard(self):
+        """The IME covers the fields below the one just typed (a phone field under the name fields). BACK closes it
+        only when it is showing; without that check BACK would leave the screen."""
+        if self.keyboard_shown():
+            self.shell("input", "keyevent", "4")
+            self.sleep(0.3)
+
+    def ime_available(self):
+        return ADB_KEYBOARD in adb(self.serial, "shell", "pm", "list", "packages", ADB_KEYBOARD, check=False)
+
+    def type_unicode(self, text):
+        """Type through the ADBKeyboard IME (base64 broadcast), then put the user's keyboard back."""
+        previous = adb(self.serial, "shell", "settings", "get", "secure", "default_input_method", check=False)
+        self.shell("ime", "enable", ADB_KEYBOARD_IME)
+        self.shell("ime", "set", ADB_KEYBOARD_IME)
+        try:
+            payload = base64.b64encode(text.encode()).decode()
+            self.shell("am", "broadcast", "-a", "ADB_INPUT_B64", "--es", "msg", payload)
+        finally:
+            if previous and previous != "null":
+                self.shell("ime", "set", previous)
 
     def centre(self, action):
         left, top, right, bottom = action["rect"]

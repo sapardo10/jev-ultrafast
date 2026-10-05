@@ -74,7 +74,20 @@ class Agent:
                 raise ValueError("This run has stopped. Start a fresh demo.")
             if len(state["decisions"]) >= MAX_STEPS * 2:
                 raise ValueError("Reached the demo's model-call budget")
-            state["decision"] = choose(state["page"], state["goal"], state["history"])
+            offered = state["page"]
+            refused = state.get("refused_fields") or set()
+            typed = {(h["action"], h["text"]) for h in state["history"] if h.get("text")}
+
+            def settled(a):
+                # Refused: the goal gave no value. Already typed: the field holds exactly what was typed there.
+                return a["kind"] == "fill" and (a["label"] in refused or (a["label"], a.get("value")) in typed)
+
+            actions = [a for a in offered["actions"] if not settled(a)]
+            if len(actions) < len(offered["actions"]) and any(
+                a["kind"] in {"click", "fill", "select"} for a in actions  # never strand the model
+            ):
+                offered = {**offered, "actions": actions}
+            state["decision"] = choose(offered, state["goal"], state["history"])
             state["decisions"].append(
                 {
                     **state["decision"],
@@ -115,6 +128,7 @@ class Agent:
                     except ValueError:
                         # Nothing was typed or clicked, so this is not a mutation: the model picked a field the goal
                         # gives no value for. Choose again; three refusals in a row stop the run.
+                        state.setdefault("refused_fields", set()).add(action["label"])
                         state["text_refusals"] = state.get("text_refusals", 0) + 1
                         state["status"] = "blocked" if state["text_refusals"] >= 3 else "ready"
                         return self.snapshot()
@@ -124,6 +138,7 @@ class Agent:
             # Browser.act checks freshness immediately before input, including after text generation.
             state["browser"].act(action, page, text=text)
             self.pending_text = None
+            state["refused_fields"] = set()
             state["elapsed_ms"] = round((time.perf_counter() - state["started_at"]) * 1000)
             # Record execution before observing. A stale post-action observation must not erase the action.
             state["history"].append(

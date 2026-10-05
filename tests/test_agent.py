@@ -331,3 +331,27 @@ def test_text_helper_refusal_chooses_again_without_mutation_then_blocks(runner, 
         assert runner.state["status"] == expected
     runner.state["browser"].act.assert_not_called()
     assert runner.state["history"] == []
+
+
+def test_a_field_the_text_helper_refused_is_not_offered_again(runner, monkeypatch):
+    monkeypatch.setattr(loop, "field_text", Mock(side_effect=ValueError("no value for this field")))
+    runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+    offered = []
+    monkeypatch.setattr(loop, "choose", lambda page, goal, history: offered.append(page) or decision("e3"))
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert [a["id"] for a in offered[0]["actions"] if a["kind"] == "fill"] == []  # the only fill was refused
+    assert runner.state["page"]["actions"][0]["kind"] == "fill"  # the observed page itself is untouched
+
+
+def test_a_field_already_holding_the_typed_text_is_not_offered_again(runner, monkeypatch):
+    runner.state["history"] = [{"action": "Search", "text": "book", "kind": "fill"}]
+    runner.state["page"]["actions"][0]["value"] = "book"
+    offered = []
+    monkeypatch.setattr(loop, "choose", lambda page, goal, history: offered.append(page) or decision("e3"))
+    runner.state["status"] = "ready"
+    runner.command("predict", {})
+    assert not any(a["kind"] == "fill" for a in offered[0]["actions"])
+    runner.state["page"]["actions"][0]["value"] = "boo"  # altered by the page: it may need typing again
+    runner.command("predict", {})
+    assert any(a["kind"] == "fill" for a in offered[1]["actions"])

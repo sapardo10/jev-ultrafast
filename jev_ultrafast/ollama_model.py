@@ -160,8 +160,10 @@ def choose(state, goal, history, engine=None):
     add_usage(usage, result.get("usage"))
     operation_answer = validate_choice(result["answers"].get("operation", {}), labels)
     operation = operation_answer["choice"]
-    if operation == "BLOCKED" and not history and targets:
-        # Landing pages hide the goal behind an entry control; nothing was tried, so BLOCKED is premature.
+    can_scroll = state.get("native") and "SCROLL_DOWN" in controls  # offered only until a swipe moved nothing
+    if operation == "BLOCKED" and targets and (not history or can_scroll):
+        # Landing pages hide the goal behind an entry control; a native form hides its next field below the
+        # keyboard. Nothing says the path is closed, so BLOCKED is premature.
         labels.pop("BLOCKED"), labels.pop("DONE", None)
         question["criteria"] = labels
         result = engine.predict(body, {"operation": question})
