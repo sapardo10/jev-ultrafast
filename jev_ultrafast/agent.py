@@ -110,7 +110,15 @@ class Agent:
                 if self.pending_text and self.pending_text[0] == context:
                     _, text, helper = self.pending_text
                 else:
-                    text, helper = field_text(context)
+                    try:
+                        text, helper = field_text(context)
+                    except ValueError:
+                        # Nothing was typed or clicked, so this is not a mutation: the model picked a field the goal
+                        # gives no value for. Choose again; three refusals in a row stop the run.
+                        state["text_refusals"] = state.get("text_refusals", 0) + 1
+                        state["status"] = "blocked" if state["text_refusals"] >= 3 else "ready"
+                        return self.snapshot()
+                    state["text_refusals"] = 0
                     self.pending_text = (context, text, helper)
                     state["text_calls"].append({**helper, "field": action["label"], "value": text})
             # Browser.act checks freshness immediately before input, including after text generation.

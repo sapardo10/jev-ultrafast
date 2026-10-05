@@ -55,13 +55,21 @@ def parse(content):
     return value
 
 
+ATTEMPTS = 2  # generation is read-only (nothing typed yet), so a malformed answer may be asked again
+
+
 def generate(context, writer=None):
     started = time.perf_counter()
-    content = (writer or chat)(messages(context))
-    try:
-        value = parse(content)
-    except (ValueError, KeyError, TypeError):
-        raise ValueError("Text helper returned no valid field value; nothing typed.") from None
+    for attempt in range(ATTEMPTS):
+        content = (writer or chat)(messages(context))
+        try:
+            value = parse(content)
+            break
+        except (ValueError, KeyError, TypeError):
+            if attempt == ATTEMPTS - 1:
+                raise ValueError(
+                    f"Text helper returned no valid field value; nothing typed. Last answer: {content[:120]!r}"
+                ) from None
     return value, {
         "model": os.environ.get("LOCAL_LLM_MODEL") or os.environ.get("LOCAL_TEXT_MODEL") or DEFAULT_MODEL,
         "latency_ms": round((time.perf_counter() - started) * 1000),

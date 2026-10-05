@@ -186,6 +186,12 @@ anything else is refused before touching the device. `browser_task`'s `url` is o
 (`ANDROID_ADB_SERVER_PORT=5038`) and `-port` for a test emulator: other Android Studio/Gradle runs attach to all devices.
 See [docs/native-apps.md](docs/native-apps.md) for results and limits.
 
+Flights on Android Chrome (checked 2026-10-04): the date picker is a full-screen sheet whose button reads
+"Done. Search for one-way flights, departing on ...". jev no longer offers DONE right after a page-changing click while a
+Done/Apply/Confirm/OK control is visible, so the run now closes the picker. The goal date must be in the future (the
+September 20 example is past on that date; the picker starts at the current month). The run is still unreliable after the
+picker: the destination field was cleared in two of three runs and nimble repeated WAIT until the step cap.
+
 Limits: elements that expose no
 role and no name (an icon-only hamburger) are not offered to the model, so some mobile layouts cannot be driven. On iOS,
 scroll is a JS scroll, screenshots are full device resolution, and typing uses WebDriver keys. Other Android emulators or

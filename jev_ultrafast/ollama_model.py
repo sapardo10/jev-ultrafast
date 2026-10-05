@@ -78,12 +78,26 @@ def shares_word(label, goal):
     return any(w in goal.lower() for w in words)
 
 
+PENDING = {"done", "apply", "confirm", "ok"}  # picker closers; Search/Next exist on ordinary pages too
+
+
+def pending_confirm(state):
+    """A visible Done/Apply/Search control means a picker or form the last click opened is not finished."""
+    def first_word(label):
+        words = "".join(c if c.isalnum() else " " for c in label.lower()).split()
+        return words[0] if words else ""
+
+    return any(a["kind"] == "click" and first_word(a["label"]) in PENDING for a in state.get("actions", []))
+
+
 def done_label(history, state, goal=""):
     """Nimble weighs option text over instructions: cite the evidence that the last click took effect."""
     last = history[-1] if history else None
     if not last or last.get("kind") != "click" or not last.get("page_changed"):
         return laya_model.DONE
     clicked = last["action"].split("\n")[0].strip()[:60]
+    if pending_confirm(state):
+        return laya_model.DONE
     if state.get("native") and not shares_word(clicked, goal):
         # A native "Allow"/"Next" tap unrelated to the goal is no evidence of completion; do not nudge to DONE.
         return laya_model.DONE
@@ -106,6 +120,10 @@ def choose(state, goal, history, engine=None):
         labels["TYPE_TEXT"] += " Empty fields: %s." % ", ".join(empty[:6]) if empty else " Every field has a value."
     labels.update({key: value["label"] for key, value in controls.items()})
     labels.update(DONE=done_label(history, state, goal), BLOCKED=laya_model.BLOCKED)
+    last = history[-1] if history else {}
+    if targets and last.get("kind") == "click" and last.get("page_changed") and pending_confirm(state):
+        # The click just opened/changed a picker that still shows Done/Apply: finishing it is the next step, not DONE.
+        labels.pop("DONE")
     question = {"type": "choice", "criteria": labels, "instructions": "Goal: %s\n%s" % (goal, next_action(state))}
     body = laya_model.page_state(state, goal, history, elements)
     usage = {}

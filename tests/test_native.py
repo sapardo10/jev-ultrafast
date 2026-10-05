@@ -250,3 +250,60 @@ def test_done_is_not_nudged_by_an_unrelated_native_tap():
     assert "choose DONE" in related
     # Web behaviour is unchanged.
     assert "choose DONE" in ollama_model.done_label(history, {}, "Tap Next twice")
+
+
+def test_text_helper_asks_again_once_after_a_malformed_answer():
+    from jev_ultrafast import local_text
+
+    answers = iter(["not json at all", '{"text": "London"}'])
+    value, _ = local_text.generate({"goal": "g", "field": {"label": "Where to?"}}, writer=lambda _m: next(answers))
+    assert value == "London"
+    with pytest.raises(ValueError, match="nothing typed"):
+        local_text.generate({"goal": "g", "field": {"label": "x"}}, writer=lambda _m: "garbage")
+
+
+def test_done_is_not_nudged_while_a_confirm_control_is_still_on_screen():
+    history = [{"kind": "click", "page_changed": True, "action": "Friday, November 20, 2026"}]
+    goal = "Find flights on November 20, 2026"
+    long_label = "Done. Search for one-way flights, departing on November 20, 2026"
+    picker = {"actions": [{"kind": "click", "label": long_label}, {"kind": "click", "label": "Reset"}]}
+    assert "choose DONE" not in ollama_model.done_label(history, picker, goal)
+    assert "choose DONE" in ollama_model.done_label(history, {"actions": [{"kind": "click", "label": "Flights"}]}, goal)
+
+
+def test_done_option_is_withheld_while_a_picker_is_still_open():
+    class Engine(ollama_model.OllamaEngine):
+        def __init__(self):
+            super().__init__(base_url="http://fake", model="fake")
+            self.operations = []
+
+        def predict(self, state, questions_):
+            question = questions_.get("operation")
+            if question:
+                self.operations.append(set(question["criteria"]))
+            keys = next(iter(questions_.values()))["criteria"]
+            first = next(iter(keys))
+            answers = {
+                q: {
+                    "choice": first,
+                    "confidence": 1.0,
+                    "probabilities": {k: float(k == first) for k in v["criteria"]},
+                }
+                for q, v in questions_.items()
+            }
+            return {"answers": answers}
+
+    page = {
+        "url": "u", "title": "t", "text": "x", "fingerprint": "f",
+        "actions": [
+            {"id": "e1", "kind": "click", "label": "Done", "role": "button", "node": 1},
+            {"id": "wait", "kind": "wait", "label": "Wait"},
+        ],
+    }
+    history = [{"kind": "click", "page_changed": True, "action": "Friday, November 20, 2026"}]
+    engine = Engine()
+    ollama_model.choose(page, "Find flights on November 20, 2026", history, engine=engine)
+    assert "DONE" not in engine.operations[0] and "BLOCKED" in engine.operations[0]
+    engine = Engine()
+    ollama_model.choose(page, "Find flights on November 20, 2026", [], engine=engine)
+    assert "DONE" in engine.operations[0]

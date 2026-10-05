@@ -321,3 +321,13 @@ def test_navigation_during_prediction_reobserves_without_action(runner):
     assert runner.state["status"] == "ready"
     assert runner.state["decision"] is None
     runner.state["browser"].act.assert_not_called()
+
+
+def test_text_helper_refusal_chooses_again_without_mutation_then_blocks(runner, monkeypatch):
+    monkeypatch.setattr(loop, "field_text", Mock(side_effect=ValueError("no value for this field")))
+    for expected in ("ready", "ready", "blocked"):
+        runner.state["decision"] = decision()
+        runner.command("act", {"fingerprint": runner.state["page"]["fingerprint"]})
+        assert runner.state["status"] == expected
+    runner.state["browser"].act.assert_not_called()
+    assert runner.state["history"] == []
