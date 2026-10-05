@@ -68,6 +68,17 @@ def main():
         passed.append("overlay blocked before input")
 
         browser.evaluate("document.body.innerHTML=" + repr("""
+          <div id="NavMenu" role="button" tabindex="0" aria-controls="Navbar" aria-expanded="false"
+               style="position:fixed;top:0;right:0;width:46px;height:43px">
+            <span class="fa-solid fa-bars" aria-hidden="true"></span></div>
+          <button style="width:60px;height:40px;margin-top:100px"><img alt="" width=10 height=10></button>
+        """))
+        page = browser.observe(screenshot=False)
+        labels = [a["label"] for a in page["actions"] if a["kind"] == "click"]
+        assert any("top right" in n and "controls Navbar" in n and "fa-bars" in n for n in labels), labels
+        passed.append("icon-only hamburger is named by position, aria-controls and icon class")
+
+        browser.evaluate("document.body.innerHTML=" + repr("""
           <form><p id="price">Total $10</p>
           <button type="button" id="buy">Buy</button>
           <label>Search <input id="query" role="combobox" aria-controls="suggestions"></label>

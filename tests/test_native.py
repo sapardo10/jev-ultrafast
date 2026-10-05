@@ -307,3 +307,20 @@ def test_done_option_is_withheld_while_a_picker_is_still_open():
     engine = Engine()
     ollama_model.choose(page, "Find flights on November 20, 2026", [], engine=engine)
     assert "DONE" in engine.operations[0]
+
+
+def test_back_and_close_are_withheld_right_after_the_goals_own_control_was_opened():
+    targets = {
+        "CLICK": {
+            "1": {"label": "Volver \n Bogotá invierte en su casa", "id": "e1"},
+            "2": {"label": "Censo inmobiliario", "id": "e2"},
+        }
+    }
+    goal = "Open the Bogotá invierte en su casa panel."
+    opened = [{"kind": "click", "page_changed": True, "action": "Bogotá invierte en su casa \n x"}]
+    assert list(ollama_model.drop_undo_targets(targets, opened, goal)["CLICK"]) == ["2"]
+    assert ollama_model.drop_undo_targets(targets, [], goal) == targets  # nothing opened yet
+    late = [{"kind": "click", "page_changed": False, "action": "Bogotá invierte en su casa \n x"}]
+    assert list(ollama_model.drop_undo_targets(targets, late, goal)["CLICK"]) == ["2"]
+    unrelated = [{"kind": "click", "page_changed": True, "action": "Menu"}]
+    assert ollama_model.drop_undo_targets(targets, unrelated, goal) == targets

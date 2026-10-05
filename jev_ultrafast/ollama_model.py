@@ -90,6 +90,33 @@ def pending_confirm(state):
     return any(a["kind"] == "click" and first_word(a["label"]) in PENDING for a in state.get("actions", []))
 
 
+UNDO = {"back", "volver", "atras", "atrás", "close", "cerrar", "cancel", "cancelar"}
+
+
+def goal_just_reached(history, goal):
+    """The last click was on exactly what the goal names (its label is most of the goal). A late-animating panel can
+    still read as unchanged, so the page-changed flag is not required: undoing that click is never the next step."""
+    last = history[-1] if history else None
+    if not last or last.get("kind") != "click":
+        return False
+    clicked = last["action"].split("\n")[0].strip()[:60]
+    return bool(clicked) and clicked.lower() in goal.lower() and len(clicked) * 2 >= len(goal.strip())
+
+
+def drop_undo_targets(targets, history, goal):
+    """Do not offer Back/Close right after the goal's own control was opened: undoing it is never the next step."""
+    if not goal_just_reached(history, goal) or "CLICK" not in targets:
+        return targets
+    kept = {
+        key: a
+        for key, a in targets["CLICK"].items()
+        if ("".join(c if c.isalnum() else " " for c in a["label"].lower()).split() or [""])[0] not in UNDO
+    }
+    if not kept:
+        return targets
+    return {**targets, "CLICK": kept}
+
+
 def done_label(history, state, goal=""):
     """Nimble weighs option text over instructions: cite the evidence that the last click took effect."""
     last = history[-1] if history else None
@@ -113,6 +140,7 @@ def done_label(history, state, goal=""):
 def choose(state, goal, history, engine=None):
     engine = engine or OllamaEngine()
     elements, targets, controls = action_space(state["actions"])
+    targets = drop_undo_targets(targets, history, goal)
     labels = {key: laya_model.OPERATIONS[key] for key in targets}
     if "TYPE_TEXT" in labels:
         # Nimble weighs option text over instructions, so say which fields still need typing.

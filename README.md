@@ -192,6 +192,14 @@ Done/Apply/Confirm/OK control is visible, so the run now closes the picker. The 
 September 20 example is past on that date; the picker starts at the current month). The run is still unreliable after the
 picker: the destination field was cleared in two of three runs and nimble repeated WAIT until the step cap.
 
+mapas.bogota.gov.co on Android Chrome (checked 2026-10-04): the hamburger is
+`<div role="button" aria-controls="Navbar">` holding only an `aria-hidden` icon, so it used to be offered as just
+"button" and the run blocked. A compact unnamed control is now named from where it is, what it controls and its icon
+class (`Unnamed icon button (top right of the screen, controls Navbar, icon fa-bars)`), the same rule as native apps.
+Four live runs: "Open the Censo inmobiliario panel" done x2 (panel header on screen), "Open the Bogotá invierte en su casa
+panel" done x2 (ends on the Obras Públicas layer legend, which is what that tile shows). Before the last guard, 2 of 4
+undid the open by clicking "Volver"; Back/Close targets are now withheld right after a click on the goal's own control.
+
 Limits: elements that expose no
 role and no name (an icon-only hamburger) are not offered to the model, so some mobile layouts cannot be driven. On iOS,
 scroll is a JS scroll, screenshots are full device resolution, and typing uses WebDriver keys. Other Android emulators or

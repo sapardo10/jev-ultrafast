@@ -21,6 +21,18 @@
         n.nodeType===1 && n.getAttribute('aria-hidden')!=='true' ? name(n,seen) : '').join(' ').trim()) ||
       e.getAttribute('title') || e.getAttribute('placeholder') || '';
   };
+  // A control with no accessible name (an icon-only hamburger) is still reachable: say where it is, what it
+  // controls, and its icon class. These are observed attributes, never selectors or coordinates for the model.
+  const fallbackName = (e,r,kind) => {
+    const vertical=r.y+r.height/2<innerHeight*0.2 ? 'top' : r.y+r.height/2>innerHeight*0.8 ? 'bottom' : 'middle';
+    const horizontal=r.x+r.width/2<innerWidth*0.33 ? 'left' : r.x+r.width/2>innerWidth*0.67 ? 'right' : 'center';
+    const controls=(e.getAttribute('aria-controls')||'').trim().split(/\s+/)[0];
+    const icon=[...e.querySelectorAll('[class]')].flatMap(n=>[...n.classList])
+      .filter(c=>/^(fa-|bi-|mdi-|icon-|material-)/.test(c) && !/^fa-(solid|regular|brands)$/.test(c))[0];
+    const small=r.width*r.height < innerWidth*innerHeight/8;
+    return !small ? kind : 'Unnamed icon '+kind+' ('+vertical+' '+horizontal+' of the screen'+
+      (controls ? ', controls '+controls : '')+(icon ? ', icon '+icon : '')+')';
+  };
   const roles=['button','link','checkbox','radio','switch','tab','menuitem','menuitemradio',
     'option','gridcell','combobox','textbox','searchbox','spinbutton'];
   const selector='a[href],button,input,textarea,select,summary,[contenteditable="true"],'+
@@ -58,7 +70,7 @@
     const r=e.getBoundingClientRect(), x=r.x+r.width/2, y=r.y+r.height/2, rname=role(e);
     if (!rname || r.width<=0 || r.height<=0 || x<0 || y<0 || x>=innerWidth || y>=innerHeight) continue;
     if (rname==='gridcell' && e.querySelector('button,[role="button"]')) continue;
-    const base={node:identity(e),role:rname,label:name(e)||rname,
+    const base={node:identity(e),role:rname,label:name(e)||fallbackName(e,r,rname),
       rect:{x:r.x,y:r.y,w:r.width,h:r.height}};
     for (const key of ['checked','selected','expanded']) {
       const value=e.getAttribute('aria-'+key);
