@@ -4,30 +4,40 @@
 design. The DOM snapshot has no DOM in a native app, so the loop stays
 `page -> indexed elements -> operation + target -> execution`; only the page source changes.
 
-## Android spike results (emulator, Ollama nimble, 2026-10-04)
+## Android task matrix (emulator, Ollama nimble, 2026-10-04)
 
-| Task | Run | Status | Steps | Seconds | Verified |
-|---|---|---|---|---|---|
-| Settings: "Turn on dark theme" | 1 | done | 2 | 66 | `cmd uimode night` = yes, screenshot shows switch on |
-| Settings: "Turn off dark theme" | 2 | done | 1 | 19 | `cmd uimode night` = no |
-| Flutter debug app (pausactive): "Tap Next twice" (app already past welcome) | 1 | done, **goal not met** | 1 | 24 | Model chose DONE after a permission "Allow"; screenshot shows Dashboard. A false DONE. |
-| Same app, fresh data: "Next until Dashboard shown" | 2 | done | 5 | 69 | screenshot: Dashboard (granted the notification permission on the test AVD) |
+`scripts/native_matrix.py` runs each task 3 times on a fresh-state emulator and verifies through adb, not through jev's DONE.
 
-Fixed on the way: a system permission dialog over a live app was reported as "app not in foreground"; screen size was
-taken from the largest bounds (off-screen rows counted); multi-line Flutter labels ("Settings\nTab 2 of 2").
+| Task | Pass | Steps | Seconds | Notes |
+|---|---|---|---|---|
+| Settings: turn on dark theme | 3/3 | 2 | 29 | `cmd uimode night` |
+| Settings: screen timeout 30 minutes | 3/3 | 3 | 37 | `screen_off_timeout` = 1800000 |
+| Settings: turn on airplane mode | 3/3 | 7 | 73 | `airplane_mode_on` = 1 (target is not on the home screen) |
+| Contacts: create "Jose Nunez", phone 5551234, save | 3/3 | 6 | 74 | `content query` finds both rows |
+| Flutter app (pausactive): onboarding to Dashboard | 3/3 | 5 | 63 | screen text |
+| Flutter probe: icon-only hamburger, open Settings | 3/3 | 2 | 27 | screen text |
+| Settings: turn off Wi-Fi | 0/3 | 15 | 147 | nimble does not know "Internet" is the Wi-Fi row |
 
-Second pass: `examples/flutter_probe` (Flutter debug app, `flutter test` green) has the mapas-style icon-only hamburger
-(a clickable `Button` with empty `content-desc`). Before the fix it was invisible. Now a compact unnamed clickable is
-offered as `Unnamed icon button (top left of the screen)` (position words only, never coordinates; screen-sized
-containers are skipped). "Open the navigation menu, then open Settings": done, 2 steps, 35 s, screenshot shows the Settings screen.
-The false DONE is fixed in the nudge: on a native screen the "last click completed it, choose DONE" hint appears only when
-the clicked label shares a word with the goal. Rerun of "Tap Next twice" no longer says DONE after an unrelated "Allow"
-(status blocked), but nimble still ignores the count and overshoots to the Dashboard.
+Total 18/21. Fixes the matrix drove, each with an offline regression test:
 
-Earlier note (superseded for unlabeled controls above): not reproduced in pausactive. Every clickable node in this Flutter app carried a semantics label
-(`content-desc`); unnamed nodes are skipped by the same rule as `snapshot.js` and covered by an offline test, but I had no
-unlabeled control to try on a device. Known limits: ~5-20 s per decision (nimble), ASCII-only typing, an ad WebView
-shows up as a control named by its click URL, custom-drawn UI is invisible, and DONE is still not proof.
+- Material text fields are named by the label drawn inside them ("Phone"), never by their contents; an EditText covered
+  by a Spinner is a dropdown; a flag emoji or `+1` is not a label.
+- The IME is dismissed after typing (only if showing), so fields below it become visible.
+- Scroll and BACK are withdrawn once they change nothing; scroll stays withdrawn on an activity whose end was seen
+  until something is clicked; a click that BACK reversed is not offered again on that screen.
+- BACK that leaves the app (home or the previous app) relaunches it; a transient empty foreground is waited out.
+- Nimble state for screens: `opened_screens` and `typed`, placed after `page_text` (a history key placed earlier moved
+  CLICK from 0.92 to 0.30 on the same screen); premature BLOCKED is re-asked while the screen can scroll.
+- Fields the text helper refused, or that already hold the typed text, are withheld from the next choice.
+- Compact unnamed controls are offered by position; system dialogs over a live app are observed.
+- Unicode text: through the ADBKeyboard IME (`com.android.adbkeyboard`) when installed, else refused before touching
+  the device with that instruction. Not exercised on a device (no APK was installed).
+
+Still open: counts ("twice"), per-decision latency (5-20 s), semantic navigation when the target is not on screen and
+has an unfamiliar name, WebViews and ads (named by their URL), custom-drawn UI, real-device runs, iOS.
+
+Earlier spike notes: a Flutter probe (`examples/flutter_probe`, `flutter test` green) reproduces the icon-only hamburger.
+A false DONE after an unrelated permission "Allow" was fixed by requiring the clicked label to share a word with the goal.
 
 ## Design (original note)
 
