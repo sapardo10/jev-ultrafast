@@ -107,6 +107,7 @@ class FakeScreen(NativeScreen):
         self.sleep, self.pages, self.sent = lambda _s: None, list(pages), []
         self.scroll_probe, self.exhausted = None, set()
         self.trail, self.undone = [], set()
+        self.end_seen = set()
 
     def read(self):
         return self.pages.pop(0) if len(self.pages) > 1 else self.pages[0]
@@ -240,6 +241,7 @@ class Foreign(NativeScreen):
         self.sleep, self.front, self.is_alive = lambda _s: None, activity, alive
         self.scroll_probe, self.exhausted = None, set()
         self.trail, self.undone = [], set()
+        self.end_seen = set()
 
     def foreground(self):
         return self.front
@@ -507,3 +509,18 @@ def test_field_label_skips_symbols_and_prefixes_inside_the_field():
     label = node({"class": "android.widget.TextView", "text": "Phone", "bounds": "[170,500][300,540]"})
     xml = screen(node({"bounds": "[0,0][1080,2400]"}), field, flag, label)
     assert parse_screen(xml)[0][0]["label"] == "Phone"
+
+
+def test_scroll_stays_withdrawn_on_an_activity_whose_end_was_seen_until_something_is_clicked():
+    page = pages()
+    device = FakeScreen([page])
+    device.act(next(a for a in page["actions"] if a["id"] == "scroll_down"), page)
+    device.observe(screenshot=False)  # unchanged: end of list
+    assert page["url"] in device.end_seen
+    scrolled = FakeScreen([pages(XML.replace("Dark theme", "Light theme"))])
+    scrolled.end_seen = device.end_seen
+    assert "scroll_down" not in [a["id"] for a in scrolled.observe(screenshot=False)["actions"]]
+    fresh_page = pages()
+    scrolled.pages = [fresh_page]
+    scrolled.act(next(a for a in fresh_page["actions"] if a["label"] == "Dark theme"), fresh_page)
+    assert not scrolled.end_seen

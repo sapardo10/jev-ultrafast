@@ -259,7 +259,10 @@ class NativeScreen:
     def __init__(self, target, serial, package, start=True):
         self.serial, self.package, self.after_input = serial, package, None
         self.scroll_probe, self.exhausted = None, set()
-        self.trail, self.undone = [], set()  # (kind, page_key, label); clicks that BACK reversed
+        self.trail, self.undone = [], set()
+        # trail: (kind, page_key, label); undone: clicks BACK reversed; end_seen: activities scrolled to the end
+        # since the last click or text entry
+        self.end_seen = set()
         self.mobile = True
         self.sleep = time.sleep
         check_device(serial)
@@ -372,11 +375,17 @@ class NativeScreen:
             self.scroll_probe = None
             if page["marker"] == marker:  # the swipe moved nothing: this edge of the list is reached
                 self.exhausted.add((action_id, marker))
+                if action_id == "scroll_down":
+                    self.end_seen.add(page["url"])
         if len(self.trail) >= 2 and self.trail[-1][0] == "back" and self.trail[-2][0] == "click":
             _, key, label = self.trail[-2]
             if key == page["page_key"]:  # back on the screen the click started from: that click was a wrong turn
                 self.undone.add((key, label))
-        page["actions"] = [a for a in page["actions"] if (a["id"], page["marker"]) not in self.exhausted]
+        page["actions"] = [
+            a for a in page["actions"]
+            if (a["id"], page["marker"]) not in self.exhausted
+            and not (a["id"] == "scroll_down" and page["url"] in self.end_seen)  # everything below was already seen
+        ]
         def reversed_click(a):
             return a["kind"] == "click" and (page["page_key"], a["label"]) in self.undone
 
@@ -423,6 +432,7 @@ class NativeScreen:
             x, y = self.centre(action)
             self.shell("input", "tap", str(x), str(y))
             self.trail.append((kind, page["page_key"], action["label"]))
+            self.end_seen.clear()
             if kind == "fill":
                 current = action.get("value") or ""
                 self.sleep(0.4)
